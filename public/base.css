@@ -1,0 +1,54 @@
+:root {
+  --bg: #f6f1ea;
+  --panel: #ffffff;
+  --ink: #2a1a12;
+  --muted: #7a6a5e;
+  --line: #e6dccf;
+  --brand: #a3320b;
+  --brand-dark: #7c2507;
+  --gold: #d99a1c;
+  --go: #1c7a48;
+  --go-dark: #145c36;
+  --danger: #b42318;
+  --radius: 12px;
+  --shadow: 0 1px 2px rgba(60, 30, 10, .08), 0 4px 14px rgba(60, 30, 10, .06);
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+}
+* { box-sizing: border-box; }
+html, body { height: 100%; margin: 0; }
+body { background: var(--bg); color: var(--ink); font-size: 15px; -webkit-font-smoothing: antialiased; }
+button { font: inherit; color: inherit; cursor: pointer; border: 0; background: none; padding: 0; }
+button:disabled { cursor: not-allowed; }
+input, select { font: inherit; color: inherit; }
+h1, h2, h3, p { margin: 0; }
+.num { font-variant-numeric: tabular-nums; }
+
+.btn {
+  display: inline-flex; align-items: center; justify-content: center; gap: 6px;
+  padding: 9px 14px; border-radius: 9px; border: 1px solid var(--line); background: var(--panel);
+  font-weight: 600; white-space: nowrap;
+}
+.btn:hover { border-color: #cdbfae; }
+.btn:focus-visible, input:focus-visible, select:focus-visible, button:focus-visible { outline: 3px solid rgba(217, 154, 28, .55); outline-offset: 1px; }
+.btn.primary { background: var(--brand); border-color: var(--brand); color: #fff; }
+.btn.primary:hover { background: var(--brand-dark); }
+.btn.danger { color: var(--danger); }
+.btn.small { padding: 5px 10px; font-size: 13px; }
+.btn:disabled { opacity: .5; }
+
+.field { display: flex; flex-direction: column; gap: 5px; font-size: 13px; font-weight: 600; color: var(--muted); }
+.input { padding: 9px 11px; border: 1px solid var(--line); border-radius: 9px; background: #fff; min-width: 0; }
+
+#toasts { position: fixed; left: 50%; bottom: 22px; transform: translateX(-50%); display: flex; flex-direction: column; gap: 8px; z-index: 100; align-items: center; pointer-events: none; }
+.toast { background: #2a1a12; color: #fff; padding: 10px 16px; border-radius: 10px; font-weight: 600; box-shadow: var(--shadow); max-width: 90vw; }
+.toast.error { background: var(--danger); }
+.toast.ok { background: var(--go-dark); }
+
+.overlay { position: fixed; inset: 0; background: rgba(42, 26, 18, .45); display: grid; place-items: center; z-index: 50; padding: 16px; }
+.dialog { background: var(--panel); border-radius: 16px; box-shadow: var(--shadow); width: min(560px, 100%); max-height: 90vh; overflow: auto; padding: 22px; }
+.dialog h2 { font-size: 19px; margin-bottom: 14px; }
+.dialog-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 18px; }
+
+@media print { #toasts, .overlay { display: none !important; } }
+
+a.btn { color: var(--ink); text-decoration: none; }

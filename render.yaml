@@ -1,0 +1,18 @@
+# Example blueprint for Render (render.com). Any host that runs a Docker
+# container or Node 20+ and offers a persistent disk works the same way.
+services:
+  - type: web
+    name: food-stall-pos
+    runtime: docker
+    plan: starter          # a persistent disk needs a paid instance
+    numInstances: 1        # keep this at 1, see README
+    healthCheckPath: /healthz
+    envVars:
+      - key: ADMIN_PASSWORD
+        sync: false        # you type this in the Render dashboard
+      - key: EVENT_TZ
+        value: America/New_York
+    disk:
+      name: pos-data
+      mountPath: /data
+      sizeGB: 1

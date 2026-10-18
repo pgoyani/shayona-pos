@@ -1,0 +1,46 @@
+# Food Stall POS with Docker.
+# Start, update and back up with ./deploy.sh rather than calling this directly.
+
+services:
+  app:
+    build: .
+    image: food-stall-pos
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      NODE_ENV: production
+      PORT: 3000
+      DATA_DIR: /data
+    volumes:
+      - ./pos-data:/data          # the database lives here on the server, outside the container
+    ports:
+      - "127.0.0.1:${APP_PORT:-3000}:3000"   # only reachable from this server (for your own proxy, if any)
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000/healthz').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+    logging:
+      driver: json-file
+      options: { max-size: "10m", max-file: "3" }
+
+  # Built-in HTTPS. Used when a domain is set in .env (COMPOSE_PROFILES=https).
+  # Gets and renews a free Let's Encrypt certificate automatically.
+  caddy:
+    image: caddy:2
+    profiles: ["https"]
+    restart: unless-stopped
+    depends_on: [app]
+    environment:
+      DOMAIN: ${DOMAIN:-localhost}
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+
+volumes:
+  caddy_data:
+  caddy_config:

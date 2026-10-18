@@ -1,0 +1,15 @@
+{
+  "name": "food-stall-pos",
+  "version": "1.0.0",
+  "description": "Simple cash POS for mandir food stalls: PIN cashiers, per-item tickets, live sales reporting",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "test": "node test/concurrency.test.js"
+  },
+  "engines": { "node": ">=20" },
+  "dependencies": {
+    "better-sqlite3": "^11.7.0",
+    "express": "^4.21.2"
+  }
+}
