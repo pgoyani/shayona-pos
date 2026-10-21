@@ -21,11 +21,16 @@ const Printer = (() => {
   let onChange = () => {};
   const setMode = (m) => { localStorage.setItem(LS_MODE, m); onChange(); };
 
+  // Ticket n of an order is the n-th unit when its lines are laid out in order.
+  // The server numbers tickets the same way, so the code printed on a ticket
+  // (order-ticket, e.g. 422-2) always identifies the same item for refunds.
+  // Refunded tickets are left out, so a reprint can never revive them.
   function ticketsFor(order) {
     const out = [];
     for (const l of order.lines) for (let i = 0; i < l.qty; i++) out.push({ stall: l.stall_name, item: l.item_name, price_cents: l.unit_price_cents });
-    out.forEach((t, i) => { t.n = i + 1; t.of = out.length; });
-    return out;
+    out.forEach((t, i) => { t.n = i + 1; t.of = out.length; t.code = `${order.id}-${t.n}`; });
+    const refunded = new Set((order.refunds || []).map((r) => r.ticket_no));
+    return out.filter((t) => !refunded.has(t.n));
   }
 
   const stamp = (ms) => new Date(ms).toLocaleString([], { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
@@ -33,7 +38,6 @@ const Printer = (() => {
   // ----- browser printing -----
   function printBrowser(order, settings, reprint) {
     const width = settings.paper_width === '58' ? 58 : 80;
-    document.getElementById('page-size').textContent = `@page { size: ${width}mm 70mm; margin: 0; }`;
     const root = document.getElementById('print-root');
     root.className = 'w' + width;
     put(root, ...ticketsFor(order).map((t) =>
@@ -42,10 +46,19 @@ const Printer = (() => {
         h('div', { class: 't-stall' }, t.stall),
         h('div', { class: 't-item' }, t.item),
         settings.show_price_on_ticket === '1' && h('div', { class: 't-price' }, money(t.price_cents)),
+        h('div', { class: 't-code-label' }, 'TICKET'),
+        h('div', { class: 't-code' }, t.code),
         reprint && h('div', { class: 't-reprint' }, 'REPRINT'),
-        h('div', { class: 't-meta' }, `Order #${order.id}  ·  Ticket ${t.n} of ${t.of}`),
+        h('div', { class: 't-meta' }, `${t.n} of ${t.of} in this order`),
         h('div', { class: 't-meta' }, `${stamp(order.created_at)}  ·  ${order.cashier_name}`),
         settings.receipt_footer && h('div', { class: 't-footer' }, settings.receipt_footer))));
+    // Size the page to the tallest ticket, so a long item name never spills
+    // onto a second page and short tickets don't waste paper.
+    root.classList.add('measuring');
+    const tallest = Math.max(...[...root.children].map((t) => t.getBoundingClientRect().height), 0) * 25.4 / 96;
+    root.classList.remove('measuring');
+    const pageMm = Math.max(60, Math.ceil(tallest + 4));
+    document.getElementById('page-size').textContent = `@page { size: ${width}mm ${pageMm}mm; margin: 0; }`;
     window.print();
   }
 
@@ -92,9 +105,11 @@ const Printer = (() => {
       b.push(LF);
       block(t.item, cols / 2);
       if (settings.show_price_on_ticket === '1') { size(0x00); line(money(t.price_cents)); }
+      size(0x00); bold(true); b.push(LF); line('TICKET');
+      size(0x11); invert(true); line(` ${t.code} `); invert(false);
       size(0x00); bold(false); b.push(LF);
       if (reprint) { bold(true); line('** REPRINT **'); bold(false); }
-      line(`Order #${order.id}  -  Ticket ${t.n} of ${t.of}`);
+      line(`${t.n} of ${t.of} in this order`);
       block(`${stamp(order.created_at)}  -  ${order.cashier_name}`, cols);
       if (settings.receipt_footer) block(settings.receipt_footer, cols);
       b.push(ESC, 0x64, cutter.feed);                  // feed a few lines so the text clears the blade

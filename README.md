@@ -89,6 +89,57 @@ prints two test tickets and the box under the options says what happened.
 If printing fails mid-order the sale is still saved. Reprint from **Recent
 orders** on the cashier screen. Reprints are marked REPRINT.
 
+## Refunds
+
+Every ticket has a code like `422-2` (order 422, ticket 2). Order numbers
+start at 100.
+
+1. The customer brings the unused ticket(s) to any cashier.
+2. The cashier presses **Refund**, types each ticket code and presses Enter.
+   The screen shows the item and the price paid, or why it can't be refunded
+   (already refunded, order cancelled, no such ticket).
+3. **Refund N tickets** saves it. Give the cash back and keep the paper
+   tickets in a refund envelope, so they can't be used at a stall.
+
+Each ticket can only be refunded once, even if two cashiers try at the same
+moment. Reprints leave out refunded tickets.
+
+Without the paper ticket, an admin can refund from **Admin > Orders > Refund**.
+Those count as "Admin", not against a cashier's drawer.
+
+The dashboard shows net sales (sales minus refunds), and for each cashier the
+cash their drawer should hold. An order with refunds can't be voided; refund
+its remaining tickets instead.
+
+## Guest service (free food for guests, through volunteers)
+
+Volunteers on the list in **Admin > Guest service** can order free food for
+guests at any cashier.
+
+1. The cashier rings up the items as usual, then presses **Guest service**
+   (under Cash collected) instead of taking cash.
+2. The cashier types the volunteer's phone number and presses **Check number**.
+   The screen shows only "Volunteer found" (never the name) or "not on the
+   volunteer list".
+3. **Print N tickets · no charge** prints the tickets. They are the same as
+   paid tickets, so stalls treat them the same way.
+
+Admin setup: add volunteers one at a time (name optional, phone required), or
+**Paste a list** with one per line, such as `Ramesh Patel, 404-555-0101`.
+Any phone format works, because only the last 10 digits are matched. Switch a
+volunteer off to stop them at once, or remove them; their past orders stay.
+
+Reporting:
+- Guest service orders are never in sales, net, or any cashier's drawer. The
+  dashboard has a Guest service tile and a by-volunteer card.
+- The Items and Stalls views show "+N guest", so stalls see the full demand.
+- The Guest service page lists each volunteer's orders, tickets, menu value
+  and last order for the chosen day. **Orders** opens that volunteer's orders.
+- The CSV export has `type` and `volunteer` columns.
+
+Guest tickets can't be refunded for cash. An admin can void a guest order made
+by mistake.
+
 ## How concurrent cashiers are handled
 
 - Every order is written in a single database transaction, so two cashiers

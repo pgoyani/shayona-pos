@@ -45,6 +45,39 @@ is in `pos-data/` next to the script.
 
 It restarts by itself after a crash or a server reboot.
 
+## Or: install from GitHub (instead of the zip)
+
+The repository is private, so the server needs read access. A deploy key
+gives the server read-only access to this one repository.
+
+On the server:
+
+    sudo apt install -y git
+    ssh-keygen -t ed25519 -C "food-stall-pos server" -f ~/.ssh/food-stall-pos -N ""
+    cat ~/.ssh/food-stall-pos.pub
+
+On GitHub: open the repository, **Settings > Deploy keys > Add deploy key**.
+Paste the line that was printed, give it a title, leave **Allow write access**
+unticked, and save.
+
+Back on the server, add this to `~/.ssh/config`:
+
+    Host github-pos
+      HostName github.com
+      User git
+      IdentityFile ~/.ssh/food-stall-pos
+
+Then clone and start:
+
+    sudo mkdir -p /opt/food-stall-pos && sudo chown $USER /opt/food-stall-pos
+    git clone git@github-pos:YOUR-GITHUB-NAME/food-stall-pos.git /opt/food-stall-pos
+    cd /opt/food-stall-pos
+    sudo ./deploy.sh
+
+To update later: push your changes from GitHub Desktop, then on the server:
+
+    cd /opt/food-stall-pos && git pull && sudo ./deploy.sh
+
 ## Everyday commands
 
 Run these from `/opt/food-stall-pos`:

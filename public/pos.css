@@ -99,6 +99,19 @@
 .settle { width: 100%; margin-top: 12px; padding: 18px 12px; border-radius: 14px; background: var(--go); color: #fff; font-size: 18px; font-weight: 800; }
 .settle:hover:not(:disabled) { background: var(--go-dark); }
 .settle:disabled { background: #cfc6ba; }
+/* Guest service: a different color from cash, so nobody presses it by habit */
+.guest-btn { width: 100%; margin-top: 8px; padding: 10px 12px; border-radius: 12px; border: 1.5px solid #c9b8e3; color: #4b2f7a; background: #f7f3fc; font-size: 14.5px; }
+.guest-btn:hover:not(:disabled) { border-color: #4b2f7a; }
+.guest-phone { width: 100%; margin-top: 12px; font-size: 26px; font-weight: 700; padding: 12px 14px; letter-spacing: .04em; }
+.guest-out { margin-top: 10px; min-height: 64px; }
+.guest-check { width: 100%; padding: 14px; font-size: 17px; }
+.guest-found { display: flex; align-items: center; gap: 10px; font-size: 20px; font-weight: 800; color: var(--go-dark); background: #e3f4ea; padding: 12px 14px; border-radius: 12px; }
+.guest-tick { width: 32px; height: 32px; border-radius: 50%; background: var(--go); color: #fff; display: grid; place-items: center; font-size: 18px; }
+.guest-go { background: #4b2f7a; }
+.guest-go:hover:not(:disabled) { background: #3a2361; }
+.guest-missing { background: #fdecea; color: var(--danger); font-weight: 700; font-size: 17px; padding: 12px 14px; border-radius: 12px; }
+.guest-missing span { font-weight: 600; font-size: 14px; }
+.done.guest .done-tick { background: #efe8f8; color: #4b2f7a; }
 
 .done { text-align: center; padding: 36px 16px; display: flex; flex-direction: column; align-items: center; gap: 6px; }
 .done-tick { width: 54px; height: 54px; border-radius: 50%; background: #e3f4ea; color: var(--go); font-size: 30px; display: grid; place-items: center; font-weight: 800; }
@@ -109,6 +122,23 @@
 
 .recent-row { display: flex; justify-content: space-between; align-items: center; gap: 12px; padding: 10px 0; border-bottom: 1px solid var(--line); }
 .recent-row.void { opacity: .55; }
+.refund-note { color: var(--danger); font-size: 13px; font-weight: 600; margin-top: 2px; }
+.refund-add { display: flex; gap: 8px; margin-top: 10px; }
+.refund-input { flex: 1; font-size: 22px; font-weight: 700; padding: 10px 14px; letter-spacing: .04em; }
+.refund-msg { min-height: 22px; color: var(--danger); font-weight: 600; font-size: 14px; margin: 6px 0 2px; }
+.refund-list { max-height: 36vh; overflow-y: auto; border-top: 1px solid var(--line); }
+.refund-row { display: grid; grid-template-columns: 92px minmax(0, 1fr) 80px 28px; align-items: center; gap: 10px; padding: 9px 4px; border-bottom: 1px solid var(--line); }
+.refund-row.bad { background: #fdecea; }
+.refund-row.bad .line-sub { color: var(--danger); font-weight: 600; white-space: normal; }
+.refund-code { font-weight: 800; font-size: 17px; }
+.refund-info { min-width: 0; }
+.refund-foot { margin-top: 12px; }
+.refund-foot .total-row strong { color: var(--brand-dark); }
+.refund-go { background: var(--brand); }
+.refund-go:hover:not(:disabled) { background: var(--brand-dark); }
+.refund-done { text-align: center; display: flex; flex-direction: column; align-items: center; gap: 6px; padding: 14px 0 4px; }
+.refund-done-title { font-size: 20px; margin-top: 4px; }
+.refund-done-title strong { font-size: 30px; }
 .radio { display: flex; gap: 10px; align-items: flex-start; padding: 10px 0; cursor: pointer; }
 .radio input { margin-top: 4px; }
 .printer .muted { font-size: 13.5px; }
@@ -123,22 +153,29 @@
 @media (max-width: 900px) { .pos { grid-template-columns: minmax(0, 1fr) 340px; } }
 
 /* ---------- tickets ---------- */
-#print-root { display: none; }
+/* Ticket styles apply on screen too (while hidden), so the page height can be
+   measured before printing. Only the print rules below show them. */
+#print-root { display: none; color: #000; font-family: Arial, Helvetica, sans-serif; margin: 0 auto; background: #fff; }
+#print-root.measuring { display: block; position: fixed; left: -10000px; top: 0; }
+#print-root.w80 { width: 72mm; }
+#print-root.w58 { width: 48mm; }
+#print-root .ticket { padding: 3mm 2mm 2mm; text-align: center; margin: 0 auto; }
+.t-event { font-size: 9pt; }
+.t-stall { margin-top: 2mm; padding: 1.6mm 1mm; background: #000; color: #fff; font-size: 13pt; font-weight: 800; text-transform: uppercase;
+  -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+.t-item { margin: 3mm 0 2mm; font-size: 20pt; font-weight: 800; line-height: 1.1; overflow-wrap: anywhere; }
+.w58 .t-item { font-size: 16pt; }
+.w58 .t-stall { font-size: 11pt; }
+.t-price { font-size: 11pt; font-weight: 700; margin-bottom: 1mm; }
+.t-code-label { font-size: 7.5pt; font-weight: 700; letter-spacing: .12em; margin-top: .5mm; }
+.t-code { display: inline-block; border: 2px solid #000; padding: .8mm 4mm 1mm; margin: .8mm 0 1.6mm; font-size: 22pt; font-weight: 800; letter-spacing: .06em; line-height: 1.1; }
+.w58 .t-code { font-size: 18pt; padding: .8mm 2.5mm 1mm; letter-spacing: .03em; }
+.t-reprint { font-size: 10pt; font-weight: 800; border: 1px solid #000; display: inline-block; padding: 0 2mm; margin-bottom: 1mm; }
+.t-meta { font-size: 8.5pt; line-height: 1.35; }
+.t-footer { font-size: 8.5pt; margin-top: 1.5mm; border-top: 1px dashed #000; padding-top: 1.2mm; }
 @media print {
   html, body { height: auto; background: #fff; }
   #app { display: none !important; }
-  #print-root { display: block; color: #000; font-family: Arial, Helvetica, sans-serif; margin: 0 auto; }
-  #print-root.w80 { width: 72mm; }
-  #print-root.w58 { width: 48mm; }
-  .ticket { break-after: page; page-break-after: always; padding: 3mm 2mm 2mm; text-align: center; margin: 0 auto; }
-  .t-event { font-size: 9pt; }
-  .t-stall { margin-top: 2mm; padding: 1.6mm 1mm; background: #000; color: #fff; font-size: 13pt; font-weight: 800; text-transform: uppercase;
-    -webkit-print-color-adjust: exact; print-color-adjust: exact; }
-  .t-item { margin: 3mm 0 2mm; font-size: 20pt; font-weight: 800; line-height: 1.1; overflow-wrap: anywhere; }
-  .w58 .t-item { font-size: 16pt; }
-  .w58 .t-stall { font-size: 11pt; }
-  .t-price { font-size: 11pt; font-weight: 700; margin-bottom: 1mm; }
-  .t-reprint { font-size: 10pt; font-weight: 800; border: 1px solid #000; display: inline-block; padding: 0 2mm; margin-bottom: 1mm; }
-  .t-meta { font-size: 8.5pt; line-height: 1.35; }
-  .t-footer { font-size: 8.5pt; margin-top: 1.5mm; border-top: 1px dashed #000; padding-top: 1.2mm; }
+  #print-root { display: block; position: static; }
+  #print-root .ticket { break-after: page; page-break-after: always; }
 }

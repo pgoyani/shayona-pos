@@ -54,10 +54,11 @@ function toast(message, kind) {
   setTimeout(() => el.remove(), kind === 'error' ? 5000 : 2200);
 }
 
-function dialog(title, body, actions) {
-  const close = () => overlay.remove();
-  const overlay = h('div', { class: 'overlay', onclick: (e) => { if (e.target === overlay) close(); } },
-    h('div', { class: 'dialog', role: 'dialog', 'aria-label': title },
+function dialog(title, body, actions, opts) {
+  const o = opts || {};
+  const close = () => { overlay.remove(); if (o.onclose) o.onclose(); };
+  const overlay = h('div', { class: 'overlay', onclick: (e) => { if (e.target === overlay && !o.sticky) close(); } },
+    h('div', { class: 'dialog' + (o.wide ? ' wide' : ''), role: 'dialog', 'aria-label': title },
       h('h2', {}, title), body,
       h('div', { class: 'dialog-actions' }, (actions || []).map((a) => h('button', { class: 'btn ' + (a.class || ''), onclick: () => a.onclick ? a.onclick(close) : close() }, a.label)),
         h('button', { class: 'btn', onclick: close }, 'Close'))));

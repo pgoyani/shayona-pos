@@ -148,6 +148,7 @@ function renderHeader() {
     h('div', { class: 'brand' }, h('span', { class: 'diya-sm' }, '🪔'), h('strong', {}, S.menu.settings.event_name)),
     h('div', { class: 'status' + (S.online ? '' : ' off') }, h('i'), S.online ? 'Connected' : 'Offline'),
     h('div', { class: 'spacer' }),
+    h('button', { class: 'btn small', onclick: refundDialog }, 'Refund'),
     h('button', { class: 'btn small', onclick: recentDialog }, 'Recent orders'),
     h('button', { class: 'btn small printer-btn', onclick: printerDialog }),
     h('div', { class: 'who' }, S.cashier.name),
@@ -220,10 +221,11 @@ function renderCart() {
   if (lines.length) body = lines;
   else if (S.last) {
     const o = S.last.order;
-    body = h('div', { class: 'done' },
+    const guest = o.kind === 'guest';
+    body = h('div', { class: 'done' + (guest ? ' guest' : '') },
       h('div', { class: 'done-tick' }, '✓'),
-      h('div', { class: 'done-title' }, `Order #${o.id} saved`),
-      h('div', { class: 'done-sub num' }, `${money(o.total_cents)} · ${o.item_count} ticket${o.item_count === 1 ? '' : 's'}`),
+      h('div', { class: 'done-title' }, guest ? `Guest service #${o.id} saved` : `Order #${o.id} saved`),
+      h('div', { class: 'done-sub num' }, guest ? `${o.item_count} ticket${o.item_count === 1 ? '' : 's'} · no charge` : `${money(o.total_cents)} · ${o.item_count} ticket${o.item_count === 1 ? '' : 's'}`),
       S.last.change != null && h('div', { class: 'done-change num' }, 'Change due ', h('strong', {}, money(S.last.change))),
       h('button', { class: 'btn', onclick: () => Printer.print(o, S.menu.settings, true) }, 'Print tickets again'));
   } else body = h('p', { class: 'empty' }, 'Tap items to start an order.');
@@ -252,7 +254,8 @@ function renderCart() {
       // Always shown once there is an order, so the buttons above never shift when a bill is tapped.
       count ? h('div', { class: 'change-row' + (S.tendered != null ? ' on' : '') }, h('span', {}, 'Change due'), h('strong', { class: 'num' }, S.tendered != null ? money(S.tendered - total) : '–')) : null,
       h('button', { class: 'settle', disabled: !count || blocked || S.busy, onclick: settle },
-        S.busy ? 'Saving…' : blocked ? 'Remove unavailable items' : count ? `Cash collected · Print ${count} ticket${count === 1 ? '' : 's'}` : 'Cash collected')));
+        S.busy ? 'Saving…' : blocked ? 'Remove unavailable items' : count ? `Cash collected · Print ${count} ticket${count === 1 ? '' : 's'}` : 'Cash collected'),
+      count ? h('button', { class: 'btn guest-btn', disabled: blocked || S.busy, onclick: guestDialog }, 'Guest service (volunteer, no charge)') : null));
 }
 
 async function settle() {
@@ -289,6 +292,90 @@ async function settle() {
   }
 }
 
+// ---------- Guest service ----------
+// A volunteer orders free food for guests. The cashier types the volunteer's
+// phone number; if it is on the list the tickets print and no cash is taken.
+function guestDialog() {
+  if (S.busy || !S.cart.length || cartBlocked()) return;
+  const count = cartCount();
+  let state = 'ask';   // ask -> checking -> found | missing
+  let phone = '';
+  const input = h('input', { class: 'input guest-phone num', type: 'tel', inputMode: 'tel', placeholder: 'Volunteer phone number', autocomplete: 'off', 'aria-label': 'Volunteer phone number' });
+  const out = h('div', { class: 'guest-out' });
+  const digits = (v) => v.replace(/\D/g, '');
+  input.addEventListener('input', () => { if (state !== 'ask') { state = 'ask'; paint(); } });
+
+  async function check() {
+    phone = input.value;
+    if (digits(phone).length < 10) { state = 'ask'; paint('Type all 10 digits of the phone number.'); return; }
+    state = 'checking'; paint();
+    try {
+      const r = await api('POST', '/api/guest/check', { phone });
+      state = r.found ? 'found' : 'missing';
+    } catch (e) {
+      if (e.status === 401) { close(); return signedOut(); }
+      state = 'ask'; paint(e.message); return;
+    }
+    paint();
+  }
+
+  async function go() {
+    if (S.busy) return;
+    S.busy = true; paint(); renderCart();
+    try {
+      const { order } = await api('POST', '/api/orders', {
+        client_ref: S.ref,
+        lines: S.cart.map((l) => ({ item_id: l.item_id, qty: l.qty })),
+        expected_total_cents: cartTotal(),
+        guest_phone: phone,
+      });
+      setOnline(true);
+      S.last = { order, change: null };
+      clearCart();
+      S.busy = false;
+      close();
+      renderMenu(); renderCart();
+      await Printer.print(order, S.menu.settings, false);
+    } catch (e) {
+      S.busy = false;
+      renderCart();
+      if (e.status === 401) { close(); return signedOut(); }
+      if (e.code === 'VOLUNTEER_NOT_FOUND') { state = 'missing'; paint(); return; }
+      if (e.code === 'ITEM_UNAVAILABLE') {
+        close();
+        S.menu.version = -1; await loadMenu();
+        toast('An item just sold out. Remove it to continue.', 'error');
+        renderMenu(); renderCart();
+        return;
+      }
+      if (e.status === 0) setOnline(false);
+      paint(e.message + ' Nothing was lost. Press the button again.');
+    }
+  }
+
+  function paint(problem) {
+    input.disabled = S.busy;
+    if (state === 'found') {
+      put(out,
+        h('div', { class: 'guest-found' }, h('span', { class: 'guest-tick' }, '✓'), 'Volunteer found'),
+        h('button', { class: 'settle guest-go', disabled: S.busy, onclick: go }, S.busy ? 'Saving…' : `Print ${count} ticket${count === 1 ? '' : 's'} · no charge`),
+        problem ? h('div', { class: 'refund-msg' }, problem) : null);
+    } else if (state === 'missing') {
+      put(out, h('div', { class: 'guest-missing' }, 'This number is not on the volunteer list.', h('br'), h('span', {}, 'Check the number, or charge it as a normal cash order.')));
+    } else {
+      put(out,
+        problem ? h('div', { class: 'refund-msg' }, problem) : null,
+        h('button', { class: 'btn primary guest-check', disabled: state === 'checking', onclick: check }, state === 'checking' ? 'Checking…' : 'Check number'));
+    }
+  }
+
+  const close = dialog('Guest service', h('form', { class: 'guest', onsubmit: (e) => { e.preventDefault(); if (state === 'found') go(); else if (state !== 'checking') check(); } },
+    h('p', { class: 'muted' }, `For volunteers ordering for guests. ${count} ticket${count === 1 ? '' : 's'} will print and no cash is collected.`),
+    input, out), [], { sticky: true });
+  paint();
+  setTimeout(() => input.focus(), 0);
+}
+
 async function logout() {
   if (S.cart.length && !confirm('There is an order in progress. Lock the screen and discard it?')) return;
   try { await api('POST', '/api/logout'); } catch (e) { /* signing out locally is enough */ }
@@ -303,9 +390,115 @@ async function recentDialog() {
   dialog('Your recent orders', orders.length ? h('div', { class: 'recent' }, orders.map((o) =>
     h('div', { class: 'recent-row' + (o.voided_at ? ' void' : '') },
       h('div', {},
-        h('strong', { class: 'num' }, `#${o.id} · ${money(o.total_cents)}`), ' ', h('span', { class: 'muted' }, timeOf(o.created_at) + (o.voided_at ? ' · VOIDED' : '')),
-        h('div', { class: 'muted' }, o.lines.map((l) => `${l.qty}× ${l.item_name}`).join(', '))),
-      !o.voided_at && h('button', { class: 'btn small', onclick: () => Printer.print(o, S.menu.settings, true) }, 'Reprint')))) : h('p', { class: 'muted' }, 'No orders yet.'));
+        h('strong', { class: 'num' }, o.kind === 'guest' ? `#${o.id} · Guest service` : `#${o.id} · ${money(o.total_cents)}`), ' ', h('span', { class: 'muted' }, timeOf(o.created_at) + (o.voided_at ? ' · VOIDED' : '')),
+        h('div', { class: 'muted' }, o.lines.map((l) => `${l.qty}× ${l.item_name}`).join(', ')),
+        o.refunds.length ? h('div', { class: 'refund-note' }, `Refunded: ${o.refunds.map((r) => `${o.id}-${r.ticket_no} ${r.item_name}`).join(', ')}`) : null),
+      // Reprints leave out refunded tickets, so they can't be used again.
+      !o.voided_at && o.refunds.length < o.item_count && h('button', { class: 'btn small', onclick: () => Printer.print(o, S.menu.settings, true) }, 'Reprint')))) : h('p', { class: 'muted' }, 'No orders yet.'));
+}
+
+// ---------- refunds ----------
+// The customer hands back unused tickets. The cashier types each ticket code
+// (e.g. 422-2), checks the list, gives the cash back and keeps the tickets.
+function refundDialog() {
+  const list = [];          // tickets looked up so far, in the order they were typed
+  let ref = newRef();       // same reference on a retry, so a refund is never paid twice
+  let busy = false;
+  let done = null;          // result after a successful refund
+
+  const input = h('input', { class: 'input refund-input num', placeholder: 'Ticket code, e.g. 422-2', autocomplete: 'off', inputMode: 'text', 'aria-label': 'Ticket code' });
+  const msg = h('div', { class: 'refund-msg' });
+  const listEl = h('div', { class: 'refund-list' });
+  const foot = h('div', { class: 'refund-foot' });
+  const body = h('div', { class: 'refund' },
+    h('p', { class: 'muted' }, 'Type the code from each unused ticket and press Enter. Keep the paper tickets after refunding.'),
+    h('form', { class: 'refund-add', onsubmit: (e) => { e.preventDefault(); add(); } }, input, h('button', { class: 'btn', type: 'submit' }, 'Add')),
+    msg, listEl, foot);
+
+  const okTickets = () => list.filter((t) => t.status === 'ok');
+  const statusText = (t) => ({
+    refunded: `Already refunded${t.refunded_by ? ` by ${t.refunded_by}` : ''}${t.refunded_at ? ` at ${timeOf(t.refunded_at)}` : ''}`,
+    voided: 'This order was cancelled. No refund.',
+    guest: 'Guest service ticket. Nothing was paid, so no refund.',
+    not_found: 'No such ticket. Check the code.',
+  }[t.status] || '');
+
+  function paint() {
+    if (done) {
+      put(listEl);
+      put(foot, h('div', { class: 'refund-done' },
+        h('div', { class: 'done-tick' }, '✓'),
+        h('div', { class: 'refund-done-title' }, 'Give back ', h('strong', { class: 'num' }, money(done.total_cents))),
+        h('div', { class: 'muted' }, `${done.refunds.length} ticket${done.refunds.length === 1 ? '' : 's'} refunded: ${done.refunds.map((r) => `${r.order_id}-${r.ticket_no}`).join(', ')}`),
+        h('div', { class: 'muted' }, 'Keep the paper tickets in the refund envelope.'),
+        h('button', { class: 'btn', onclick: () => { done = null; list.length = 0; ref = newRef(); msg.textContent = ''; paint(); input.focus(); } }, 'Refund more tickets')));
+      input.disabled = true;
+      return;
+    }
+    input.disabled = false;
+    put(listEl, list.length ? list.map((t, i) =>
+      h('div', { class: 'refund-row' + (t.status === 'ok' ? '' : ' bad') },
+        h('div', { class: 'refund-code num' }, t.code),
+        h('div', { class: 'refund-info' },
+          h('div', { class: 'line-name' }, t.item_name || '—'),
+          h('div', { class: 'line-sub' }, t.status === 'ok' ? `${t.stall_name} · sold ${timeOf(t.sold_at)} by ${t.sold_by}` : statusText(t))),
+        h('div', { class: 'line-total num' }, t.status === 'ok' ? money(t.amount_cents) : '—'),
+        h('button', { class: 'line-x', 'aria-label': 'Remove', title: 'Remove', onclick: () => { list.splice(i, 1); ref = newRef(); paint(); input.focus(); } }, '×')))
+      : h('p', { class: 'empty' }, 'No tickets added yet.'));
+    const ok = okTickets();
+    const total = ok.reduce((s, t) => s + t.amount_cents, 0);
+    put(foot,
+      h('div', { class: 'total-row' }, h('span', {}, `To give back · ${ok.length} ticket${ok.length === 1 ? '' : 's'}`), h('strong', { class: 'num' }, money(total))),
+      list.length > ok.length ? h('div', { class: 'muted small' }, 'Tickets marked in red are not included.') : null,
+      h('button', { class: 'settle refund-go', disabled: !ok.length || busy, onclick: submit },
+        busy ? 'Saving…' : ok.length ? `Refund ${ok.length} ticket${ok.length === 1 ? '' : 's'} · give back ${money(total)}` : 'Refund'));
+  }
+
+  async function add() {
+    const code = input.value.trim();
+    if (!code) return;
+    msg.textContent = '';
+    try {
+      const { ticket } = await api('GET', '/api/tickets/' + encodeURIComponent(code));
+      if (list.some((t) => t.code === ticket.code)) { msg.textContent = `${ticket.code} is already in the list.`; input.select(); return; }
+      list.push(ticket);
+      ref = newRef();
+      input.value = '';
+      paint();
+    } catch (e) {
+      if (e.status === 401) return signedOut();
+      msg.textContent = e.message;
+      input.select();
+    }
+    input.focus();
+  }
+
+  async function submit() {
+    const ok = okTickets();
+    if (!ok.length || busy) return;
+    busy = true; paint();
+    try {
+      done = await api('POST', '/api/refunds', { batch_ref: ref, tickets: ok.map((t) => ({ order_id: t.order_id, ticket_no: t.ticket_no })) });
+      busy = false;
+      toast(`Refund saved. Give back ${money(done.total_cents)}.`, 'ok');
+    } catch (e) {
+      busy = false;
+      if (e.status === 401) return signedOut();
+      if (e.code === 'TICKET_PROBLEM') {
+        // Someone refunded one of these a moment ago: show which, refund nothing.
+        for (const p of e.body.tickets || []) { const t = list.find((x) => x.code === p.code); if (t) Object.assign(t, p); }
+        ref = newRef();
+        msg.textContent = 'Nothing was refunded. Remove the tickets marked in red and try again.';
+      } else {
+        msg.textContent = e.message + ' Nothing was lost. Press the button again.';
+      }
+    }
+    paint();
+  }
+
+  paint();
+  dialog('Refund tickets', body, [], { sticky: true, wide: true });
+  setTimeout(() => input.focus(), 0);
 }
 
 function printerDialog() {

@@ -104,6 +104,7 @@ function limiter(max, windowMs) {
   };
 }
 const pinLimiter = limiter(30, 5 * 60000);
+const phoneLimiter = limiter(40, 5 * 60000); // wrong Guest service numbers
 const adminLimiter = limiter(10, 10 * 60000);
 
 // ---------- live updates (Server-Sent Events) ----------
@@ -174,13 +175,50 @@ app.post('/api/orders', requireCashier, (req, res) => {
   if (!Array.isArray(b.lines) || b.lines.length < 1 || b.lines.length > 100) throw bad('Order has no items');
   const lines = b.lines.map((l) => ({ item_id: int(l && l.item_id, 'Item', 1, 2 ** 31), qty: int(l && l.qty, 'Quantity', 1, 99) }));
   const expected = int(b.expected_total_cents, 'Total', 0, 10000000);
-  const tendered = b.cash_tendered_cents == null ? null : int(b.cash_tendered_cents, 'Cash received', 0, 100000000);
-  const { order, duplicate } = db.createOrder(req.cashier, { client_ref: b.client_ref, lines, expected_total_cents: expected, cash_tendered_cents: tendered });
+  const guestPhone = b.guest_phone == null ? null : String(b.guest_phone).slice(0, 30);
+  if (guestPhone != null && !db.normPhone(guestPhone)) throw bad('Phone number needs 10 digits');
+  const tendered = guestPhone != null || b.cash_tendered_cents == null ? null : int(b.cash_tendered_cents, 'Cash received', 0, 100000000);
+  const { order, duplicate } = db.createOrder(req.cashier, { client_ref: b.client_ref, lines, expected_total_cents: expected, cash_tendered_cents: tendered, guest_phone: guestPhone });
   if (!duplicate) broadcast('order', { id: order.id, total_cents: order.total_cents }, 'admin');
   res.status(duplicate ? 200 : 201).json({ order, duplicate });
 });
 
+// Guest service: the cashier types the volunteer's phone number. We only say
+// whether it is on the list; the name is never sent to the cashier screen.
+app.post('/api/guest/check', requireCashier, (req, res) => {
+  if (phoneLimiter.blocked(req.ip)) throw new HttpError(429, 'TOO_MANY_ATTEMPTS', 'Too many numbers not found. Wait a few minutes.');
+  const phone = String((req.body || {}).phone || '').slice(0, 30);
+  if (!db.normPhone(phone)) throw bad('Phone number needs 10 digits');
+  const found = !!db.volunteerByPhone(phone);
+  if (!found) phoneLimiter.fail(req.ip);
+  res.json({ found });
+});
+
 app.get('/api/orders/recent', requireCashier, (req, res) => res.json({ orders: db.recentOrdersForCashier(req.cashier.id) }));
+
+// ---------- refunds ----------
+// A ticket code is "order-ticket", e.g. 422-2. Accept a space, slash or dot too.
+function parseTicketCode(s) {
+  const m = /^\s*#?\s*(\d{1,9})\s*[-\s/.]\s*(\d{1,4})\s*$/.exec(String(s || ''));
+  if (!m) throw bad('Type the ticket code like 422-2');
+  return { order_id: Number(m[1]), ticket_no: Number(m[2]) };
+}
+function refundBody(b, maxTickets) {
+  if (typeof b.batch_ref !== 'string' || !/^[A-Za-z0-9-]{16,64}$/.test(b.batch_ref)) throw bad('Refund reference is not valid');
+  if (!Array.isArray(b.tickets) || b.tickets.length < 1 || b.tickets.length > maxTickets) throw bad('No tickets to refund');
+  const tickets = b.tickets.map((t) => ({ order_id: int(t && t.order_id, 'Ticket', 1, 2 ** 31), ticket_no: int(t && t.ticket_no, 'Ticket', 1, 10000) }));
+  const reason = b.reason == null ? null : String(b.reason).trim().slice(0, 200) || null;
+  return { batch_ref: b.batch_ref, tickets, reason };
+}
+app.get('/api/tickets/:code', requireCashier, (req, res) => {
+  const { order_id, ticket_no } = parseTicketCode(req.params.code);
+  res.json({ ticket: db.lookupTicket(order_id, ticket_no) });
+});
+app.post('/api/refunds', requireCashier, (req, res) => {
+  const result = db.refundTickets(req.cashier, refundBody(req.body || {}, 50));
+  if (!result.duplicate) broadcast('order', {}, 'admin');
+  res.status(result.duplicate ? 200 : 201).json(result);
+});
 app.get('/api/events', requireCashier, (req, res) => openStream(req, res, 'cashier'));
 
 // ---------- admin API ----------
@@ -263,6 +301,35 @@ admin.patch('/cashiers/:id', (req, res) => {
 });
 admin.delete('/cashiers/:id', (req, res) => { db.archiveCashier(idParam(req)); res.json({ ok: true }); });
 
+// ---------- volunteers (Guest service) ----------
+const nameOf = (v) => (v == null ? '' : String(v).trim().replace(/\s+/g, ' ').slice(0, 60));
+admin.get('/volunteers', (req, res) => res.json({ volunteers: db.listVolunteers(range(req)) }));
+admin.post('/volunteers', (req, res) => {
+  const b = req.body || {};
+  const id = db.createVolunteer({ name: nameOf(b.name), phone: String(b.phone || '').slice(0, 30) });
+  res.status(201).json({ id });
+});
+// Paste a list, one per line: "Name, phone", "Name phone" or just the phone.
+admin.post('/volunteers/bulk', (req, res) => {
+  const textIn = String((req.body || {}).text || '');
+  if (textIn.length > 100000) throw bad('List is too long');
+  const rows = textIn.split(/\r?\n/).map((l) => l.trim()).filter(Boolean).slice(0, 2000).map((line) => {
+    const m = /^(.*?)[\s,;\t]*([+(]?\d[\d\s().-]{8,}\d)\s*$/.exec(line);
+    return m ? { line, name: nameOf(m[1].replace(/[,;\t]+$/, '')), phone: m[2] } : { line, name: '', phone: '' };
+  });
+  res.json(db.addVolunteers(rows));
+});
+admin.patch('/volunteers/:id', (req, res) => {
+  const b = req.body || {};
+  db.updateVolunteer(idParam(req), {
+    name: b.name === undefined ? undefined : nameOf(b.name),
+    phone: b.phone === undefined ? undefined : String(b.phone).slice(0, 30),
+    active: b.active === undefined ? undefined : !!b.active,
+  });
+  res.json({ ok: true });
+});
+admin.delete('/volunteers/:id', (req, res) => { db.archiveVolunteer(idParam(req)); res.json({ ok: true }); });
+
 admin.get('/report', (req, res) => {
   const bucketMin = [5, 15, 30, 60, 1440].includes(Number(req.query.bucket)) ? Number(req.query.bucket) : 15;
   res.json(db.report({ ...range(req), bucketMin }));
@@ -270,12 +337,23 @@ admin.get('/report', (req, res) => {
 admin.get('/orders', (req, res) => {
   const limit = Math.min(Math.max(Number(req.query.limit) || 50, 1), 200);
   const offset = Math.max(Number(req.query.offset) || 0, 0);
-  res.json(db.listOrders({ ...range(req), limit, offset, cashier_id: Number(req.query.cashier_id) || null, search: Number(req.query.search) || null }));
+  res.json(db.listOrders({ ...range(req), limit, offset, cashier_id: Number(req.query.cashier_id) || null, search: Number(req.query.search) || null,
+    kind: ['sale', 'guest'].includes(req.query.kind) ? req.query.kind : null, volunteer_id: Number(req.query.volunteer_id) || null }));
 });
 admin.get('/orders/:id', (req, res) => {
   const o = db.loadOrder(idParam(req));
   if (!o) throw new HttpError(404, 'NOT_FOUND', 'Order not found');
   res.json({ order: o });
+});
+// Refund without the paper ticket (lost ticket, mistakes). Recorded as "Admin".
+admin.post('/orders/:id/refund', (req, res) => {
+  const id = idParam(req);
+  const b = req.body || {};
+  if (!Array.isArray(b.ticket_nos)) throw bad('No tickets to refund');
+  const body = refundBody({ ...b, tickets: b.ticket_nos.map((n) => ({ order_id: id, ticket_no: n })) }, 500);
+  const result = db.refundTickets({ id: null, name: 'Admin' }, body);
+  if (!result.duplicate) broadcast('order', {}, 'admin');
+  res.json(result);
 });
 admin.post('/orders/:id/void', (req, res) => {
   db.setVoid(idParam(req), true, String((req.body || {}).reason || '').slice(0, 200));
@@ -310,10 +388,11 @@ const money = (c) => (c / 100).toFixed(2);
 admin.get('/export.csv', (req, res) => {
   const fmt = new Intl.DateTimeFormat('en-CA', { timeZone: EVENT_TZ, year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false });
   const rows = db.exportRows(range(req));
-  const out = ['order_number,time_local,cashier,stall,item,qty,unit_price,line_total,order_total,voided'];
+  const out = ['order_number,time_local,cashier,type,volunteer,stall,item,qty,unit_price,line_total,order_total,voided,refunded_qty,refunded_amount'];
   for (const r of rows) {
-    out.push([r.order_id, fmt.format(new Date(r.created_at)).replace(',', ''), r.cashier_name, r.stall_name, r.item_name, r.qty,
-      money(r.unit_price_cents), money(r.line_total_cents), money(r.order_total_cents), r.voided_at ? 'yes' : ''].map(csvCell).join(','));
+    out.push([r.order_id, fmt.format(new Date(r.created_at)).replace(',', ''), r.cashier_name, r.kind === 'guest' ? 'guest service' : 'sale', r.volunteer_name || '',
+      r.stall_name, r.item_name, r.qty,
+      money(r.unit_price_cents), money(r.line_total_cents), money(r.order_total_cents), r.voided_at ? 'yes' : '', r.refunded_qty || '', r.refunded_qty ? money(r.refunded_cents) : ''].map(csvCell).join(','));
   }
   res.setHeader('Content-Type', 'text/csv; charset=utf-8');
   res.setHeader('Content-Disposition', 'attachment; filename="pos-sales.csv"');
