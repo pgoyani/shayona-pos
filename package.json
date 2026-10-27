@@ -5,7 +5,8 @@
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
-    "test": "node test/concurrency.test.js"
+    "test": "node test/concurrency.test.js",
+    "test:live": "node test/live.js"
   },
   "engines": {
     "node": ">=20"

@@ -185,6 +185,28 @@ Phones on mobile data cannot reach a laptop on the venue WiFi.
 at once, with double submissions and mid-rush price changes, then checks the
 report matches the cash collected to the cent.
 
+## Load test on the live site
+
+Run this from a Mac once the site is deployed, before the event:
+
+    npm run test:live -- https://your-site.org --password YOUR_ADMIN_PASSWORD --force
+
+It adds a "LOAD TEST" stall, 6 test cashiers and a test volunteer. Then it
+runs a rush: 720 orders from 6 cashiers at once, 150 phone pre-orders with
+cashiers racing to pay them, and overlapping refunds. It checks that every
+drawer, the stall total, Guest service and pre-orders add up to the cent,
+prints how fast each request was, and removes the test stall, cashiers and
+volunteer.
+
+- **Real menu and cashiers:** it never touches them.
+- **Test orders:** they stay in the sales, so press **Admin > Settings >
+  Clear test sales** before the event.
+- **When to run it:** run it when no one is selling for real. If the site
+  already has sales, it stops unless you add `--force`.
+- **Options:** `--orders 120` sets orders per cashier, `--phones 150` sets
+  pre-orders. Keep phones at 400 or less every 5 minutes, which is the
+  site's limit per network.
+
 ## Files
 
     server.js      web server and API
