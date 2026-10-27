@@ -155,3 +155,15 @@ a.btn { text-decoration: none; }
   .tile.hero { grid-column: 1 / -1; }
   .cols { grid-template-columns: minmax(0, 1fr); }
 }
+
+/* Phone pre-orders */
+.pre-small { color: #8a5a00; font-size: 12px; font-weight: 700; }
+.minis { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; }
+.mini { background: #faf6f0; border-radius: 10px; padding: 10px; }
+.mini .tile-label { font-size: 10.5px; }
+.mini-value { font-size: 22px; font-weight: 800; margin-top: 2px; }
+.qr-wrap { display: flex; gap: 18px; align-items: flex-start; flex-wrap: wrap; }
+.qr { width: 170px; height: 170px; border: 1px solid var(--line); border-radius: 8px; image-rendering: pixelated; background: #fff; }
+.qr-side { flex: 1; min-width: 240px; }
+.qr-side .input { width: 100%; }
+.qr-warn { color: #6b4a00; font-size: 13px; font-weight: 600; margin-top: 6px; }

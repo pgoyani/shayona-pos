@@ -51,6 +51,7 @@ const Printer = (() => {
         reprint && h('div', { class: 't-reprint' }, 'REPRINT'),
         h('div', { class: 't-meta' }, `${t.n} of ${t.of} in this order`),
         h('div', { class: 't-meta' }, `${stamp(order.created_at)}  ·  ${order.cashier_name}`),
+        settings.refund_line && h('div', { class: 't-refund' }, settings.refund_line),
         settings.receipt_footer && h('div', { class: 't-footer' }, settings.receipt_footer))));
     // Size the page to the tallest ticket, so a long item name never spills
     // onto a second page and short tickets don't waste paper.
@@ -103,7 +104,9 @@ const Printer = (() => {
       size(0x00); bold(false); block(settings.event_name, cols); b.push(LF);
       size(0x11); bold(true); invert(true); wrap(t.stall, cols / 2 - 2).forEach((l) => line(' ' + l + ' ')); invert(false);
       b.push(LF);
-      block(t.item, cols / 2);
+      // Item name in extra-large letters so the stall can read it at arm's length.
+      // 80mm: 3x wide and 3x tall (16 letters a line). 58mm: 2x wide, 3x tall.
+      if (cols === 48) { size(0x22); block(t.item, 16); } else { size(0x12); block(t.item, 16); }
       if (settings.show_price_on_ticket === '1') { size(0x00); line(money(t.price_cents)); }
       size(0x00); bold(true); b.push(LF); line('TICKET');
       size(0x11); invert(true); line(` ${t.code} `); invert(false);
@@ -111,6 +114,7 @@ const Printer = (() => {
       if (reprint) { bold(true); line('** REPRINT **'); bold(false); }
       line(`${t.n} of ${t.of} in this order`);
       block(`${stamp(order.created_at)}  -  ${order.cashier_name}`, cols);
+      if (settings.refund_line) { b.push(LF); block(settings.refund_line, cols); }
       if (settings.receipt_footer) block(settings.receipt_footer, cols);
       b.push(ESC, 0x64, cutter.feed);                  // feed a few lines so the text clears the blade
       b.push(...cutter.bytes);                         // cut

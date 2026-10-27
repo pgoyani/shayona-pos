@@ -3,6 +3,7 @@ const express = require('express');
 const crypto = require('crypto');
 const path = require('path');
 const fs = require('fs');
+const QRCode = require('qrcode');
 const { openDb, HttpError } = require('./db');
 
 const PORT = Number(process.env.PORT) || 3000;
@@ -105,6 +106,9 @@ function limiter(max, windowMs) {
 }
 const pinLimiter = limiter(30, 5 * 60000);
 const phoneLimiter = limiter(40, 5 * 60000); // wrong Guest service numbers
+// Phone pre-orders come from the public. Many phones can share one venue WiFi
+// address, so the limit per address is generous. PREORDER_LIMIT overrides it.
+const preorderLimiter = limiter(Number(process.env.PREORDER_LIMIT) || 400, 5 * 60000);
 const adminLimiter = limiter(10, 10 * 60000);
 
 // ---------- live updates (Server-Sent Events) ----------
@@ -175,10 +179,11 @@ app.post('/api/orders', requireCashier, (req, res) => {
   if (!Array.isArray(b.lines) || b.lines.length < 1 || b.lines.length > 100) throw bad('Order has no items');
   const lines = b.lines.map((l) => ({ item_id: int(l && l.item_id, 'Item', 1, 2 ** 31), qty: int(l && l.qty, 'Quantity', 1, 99) }));
   const expected = int(b.expected_total_cents, 'Total', 0, 10000000);
+  const preorderId = b.preorder_id == null ? null : int(b.preorder_id, 'Pre-order', 1, 2 ** 31);
   const guestPhone = b.guest_phone == null ? null : String(b.guest_phone).slice(0, 30);
   if (guestPhone != null && !db.normPhone(guestPhone)) throw bad('Phone number needs 10 digits');
   const tendered = guestPhone != null || b.cash_tendered_cents == null ? null : int(b.cash_tendered_cents, 'Cash received', 0, 100000000);
-  const { order, duplicate } = db.createOrder(req.cashier, { client_ref: b.client_ref, lines, expected_total_cents: expected, cash_tendered_cents: tendered, guest_phone: guestPhone });
+  const { order, duplicate } = db.createOrder(req.cashier, { client_ref: b.client_ref, lines, expected_total_cents: expected, cash_tendered_cents: tendered, guest_phone: guestPhone, preorder_id: preorderId });
   if (!duplicate) broadcast('order', { id: order.id, total_cents: order.total_cents }, 'admin');
   res.status(duplicate ? 200 : 201).json({ order, duplicate });
 });
@@ -193,6 +198,16 @@ app.post('/api/guest/check', requireCashier, (req, res) => {
   if (!found) phoneLimiter.fail(req.ip);
   res.json({ found });
 });
+
+// ---------- phone pre-orders: cashier side ----------
+const codeOf = (v) => { const c = String(v || '').replace(/\D/g, ''); if (c.length < 4 || c.length > 5) throw bad('Pre-order codes have 4 digits'); return c; };
+app.post('/api/preorders/claim', requireCashier, (req, res) => {
+  const b = req.body || {};
+  const r = db.claimPreorder(req.cashier, codeOf(b.code), !!b.take_over);
+  if (r.status === 'ok') broadcast('order', {}, 'admin');
+  res.json(r);
+});
+app.post('/api/preorders/:id/release', requireCashier, (req, res) => { db.releasePreorder(req.cashier, idParam(req)); res.json({ ok: true }); });
 
 app.get('/api/orders/recent', requireCashier, (req, res) => res.json({ orders: db.recentOrdersForCashier(req.cashier.id) }));
 
@@ -220,6 +235,39 @@ app.post('/api/refunds', requireCashier, (req, res) => {
   res.status(result.duplicate ? 200 : 201).json(result);
 });
 app.get('/api/events', requireCashier, (req, res) => openStream(req, res, 'cashier'));
+
+// ---------- phone pre-orders: public side (no sign-in) ----------
+const pub = express.Router();
+app.use('/api/public', pub);
+pub.use((req, res, next) => { res.setHeader('Cache-Control', 'no-store'); next(); });
+pub.get('/menu', (req, res) => {
+  const st = db.getSettings();
+  const stalls = db.catalog({ forCashier: true })
+    .map((s) => ({ id: s.id, name: s.name, color: s.color, items: s.items.filter((i) => i.available).map((i) => ({ id: i.id, name: i.name, price_cents: i.price_cents })) }))
+    .filter((s) => s.items.length);
+  res.json({ event_name: st.event_name, open: st.preorders_enabled === '1', stalls });
+});
+pub.post('/preorders', (req, res) => {
+  if (preorderLimiter.blocked(req.ip)) throw new HttpError(429, 'TOO_MANY_ATTEMPTS', 'Too many orders from this network. Please order at a cashier.');
+  const b = req.body || {};
+  if (typeof b.client_ref !== 'string' || !/^[A-Za-z0-9-]{16,64}$/.test(b.client_ref)) throw bad('Order reference is not valid');
+  if (!Array.isArray(b.lines) || b.lines.length < 1 || b.lines.length > 40) throw bad('Your order is empty');
+  const lines = b.lines.map((l) => ({ item_id: int(l && l.item_id, 'Item', 1, 2 ** 31), qty: int(l && l.qty, 'Quantity', 1, 30) }));
+  const r = db.createPreorder({ client_ref: b.client_ref, lines, expected_total_cents: int(b.expected_total_cents, 'Total', 0, 10000000) });
+  if (!r.duplicate) { preorderLimiter.fail(req.ip); broadcast('order', {}, 'admin'); }
+  res.status(r.duplicate ? 200 : 201).json(r);
+});
+const refOf = (v) => { if (typeof v !== 'string' || !/^[A-Za-z0-9-]{16,64}$/.test(v)) throw bad('Order reference is not valid'); return v; };
+pub.get('/preorders/:code', (req, res) => {
+  const p = db.preorderStatus(codeOf(req.params.code), refOf(req.query.ref));
+  if (!p) throw new HttpError(404, 'NOT_FOUND', 'Order not found');
+  res.json({ preorder: p });
+});
+pub.post('/preorders/:code/cancel', (req, res) => {
+  db.cancelPreorder(codeOf(req.params.code), refOf((req.body || {}).ref));
+  broadcast('order', {}, 'admin');
+  res.json({ ok: true });
+});
 
 // ---------- admin API ----------
 app.post('/api/admin/login', (req, res) => {
@@ -372,11 +420,23 @@ admin.put('/settings', (req, res) => {
   const patch = {};
   if (b.event_name !== undefined) patch.event_name = text(b.event_name, 'Event name', 60);
   if (b.receipt_footer !== undefined) patch.receipt_footer = String(b.receipt_footer).trim().slice(0, 60);
+  if (b.refund_line !== undefined) patch.refund_line = String(b.refund_line).trim().slice(0, 80);
   if (b.paper_width !== undefined) { if (!['58', '80'].includes(String(b.paper_width))) throw bad('Paper width must be 58 or 80'); patch.paper_width = String(b.paper_width); }
   if (b.show_price_on_ticket !== undefined) patch.show_price_on_ticket = b.show_price_on_ticket ? '1' : '0';
+  if (b.preorders_enabled !== undefined) patch.preorders_enabled = b.preorders_enabled ? '1' : '0';
   const s = db.updateSettings(patch);
   menuChanged();
   res.json(s);
+});
+
+// QR code for the phone order page, as an SVG the admin can print on a poster.
+admin.get('/qr.svg', async (req, res, next) => {
+  try {
+    const url = String(req.query.url || '');
+    if (!/^https?:\/\/[^\s]{3,200}$/.test(url)) throw bad('Address is not valid');
+    res.setHeader('Content-Type', 'image/svg+xml');
+    res.send(await QRCode.toString(url, { type: 'svg', margin: 1, errorCorrectionLevel: 'M' }));
+  } catch (e) { next(e); }
 });
 
 const csvCell = (v) => {
@@ -388,11 +448,11 @@ const money = (c) => (c / 100).toFixed(2);
 admin.get('/export.csv', (req, res) => {
   const fmt = new Intl.DateTimeFormat('en-CA', { timeZone: EVENT_TZ, year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false });
   const rows = db.exportRows(range(req));
-  const out = ['order_number,time_local,cashier,type,volunteer,stall,item,qty,unit_price,line_total,order_total,voided,refunded_qty,refunded_amount'];
+  const out = ['order_number,time_local,cashier,type,volunteer,stall,item,qty,unit_price,line_total,order_total,voided,refunded_qty,refunded_amount,preorder_code'];
   for (const r of rows) {
     out.push([r.order_id, fmt.format(new Date(r.created_at)).replace(',', ''), r.cashier_name, r.kind === 'guest' ? 'guest service' : 'sale', r.volunteer_name || '',
       r.stall_name, r.item_name, r.qty,
-      money(r.unit_price_cents), money(r.line_total_cents), money(r.order_total_cents), r.voided_at ? 'yes' : '', r.refunded_qty || '', r.refunded_qty ? money(r.refunded_cents) : ''].map(csvCell).join(','));
+      money(r.unit_price_cents), money(r.line_total_cents), money(r.order_total_cents), r.voided_at ? 'yes' : '', r.refunded_qty || '', r.refunded_qty ? money(r.refunded_cents) : '', r.preorder_code || ''].map(csvCell).join(','));
   }
   res.setHeader('Content-Type', 'text/csv; charset=utf-8');
   res.setHeader('Content-Disposition', 'attachment; filename="pos-sales.csv"');
@@ -431,10 +491,12 @@ app.use((err, req, res, next) => {
 });
 
 setInterval(() => db.purgeSessions(), 3600 * 1000).unref();
+setInterval(() => db.expirePreorders(), 60 * 1000).unref();
 
 const server = app.listen(PORT, () => {
   console.log(`Food Stall POS running on port ${PORT}`);
   console.log(`  Cashier screen: http://localhost:${PORT}/`);
+  console.log(`  Phone ordering: http://localhost:${PORT}/order`);
   console.log(`  Admin:          http://localhost:${PORT}/admin`);
   console.log(`  Database:       ${DB_PATH}`);
 });

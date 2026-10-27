@@ -163,8 +163,9 @@
 .t-event { font-size: 9pt; }
 .t-stall { margin-top: 2mm; padding: 1.6mm 1mm; background: #000; color: #fff; font-size: 13pt; font-weight: 800; text-transform: uppercase;
   -webkit-print-color-adjust: exact; print-color-adjust: exact; }
-.t-item { margin: 3mm 0 2mm; font-size: 20pt; font-weight: 800; line-height: 1.1; overflow-wrap: anywhere; }
-.w58 .t-item { font-size: 16pt; }
+.t-item { margin: 3mm 0 2mm; font-size: 28pt; font-weight: 800; line-height: 1.1; overflow-wrap: anywhere; }
+.w58 .t-item { font-size: 22pt; }
+.t-refund { font-size: 8.5pt; font-weight: 600; margin-top: 1.5mm; }
 .w58 .t-stall { font-size: 11pt; }
 .t-price { font-size: 11pt; font-weight: 700; margin-bottom: 1mm; }
 .t-code-label { font-size: 7.5pt; font-weight: 700; letter-spacing: .12em; margin-top: .5mm; }
@@ -179,3 +180,20 @@
   #print-root { display: block; position: static; }
   #print-root .ticket { break-after: page; page-break-after: always; }
 }
+
+/* Phone pre-orders */
+.topbar .preorder-btn { background: #fff; color: var(--brand-dark); }
+.topbar .preorder-btn:hover { background: #fdf3d7; }
+.cart-head .pre-tag { margin-left: auto; margin-right: 8px; }
+.pre-tag { display: inline-block; background: #fdf3d7; color: #6b4a00; border: 1px solid #ecd9a0; border-radius: 7px; padding: 3px 8px; font-weight: 800; font-size: 13px; }
+.pre-tag.small { font-size: 12px; padding: 1px 6px; }
+.pre-note { margin: 0 16px 6px; padding: 7px 10px; background: #fdf3d7; border-radius: 9px; color: #6b4a00; font-weight: 600; font-size: 13.5px; }
+.pre-row { display: flex; gap: 8px; margin-top: 12px; }
+.pre-input { flex: 1; font-size: 34px; font-weight: 800; letter-spacing: .2em; padding: 10px 14px; text-align: center; }
+.pre-row .btn { padding: 0 24px; font-size: 17px; }
+.pre-out { margin-top: 12px; min-height: 30px; display: flex; flex-direction: column; gap: 10px; align-items: flex-start; }
+.pre-problem { width: 100%; background: #fdf3d7; color: #6b4a00; padding: 12px 14px; border-radius: 12px; font-size: 16px; }
+.pre-problem span { font-size: 14px; }
+.pre-problem.stop { background: #fdecea; color: var(--danger); }
+.pre-warn { margin-top: 8px; color: #6b4a00; font-weight: 600; font-size: 14px; }
+.big-warn { font-size: 18px; font-weight: 700; color: var(--danger); }

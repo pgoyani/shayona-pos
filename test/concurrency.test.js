@@ -45,7 +45,7 @@ function client() {
 async function main() {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pos-test-'));
   const server = spawn(process.execPath, [path.join(__dirname, '..', 'server.js')], {
-    env: { ...process.env, PORT, DATA_DIR: dir, ADMIN_PASSWORD: 'test-admin', NODE_ENV: 'test' },
+    env: { ...process.env, PORT, DATA_DIR: dir, ADMIN_PASSWORD: 'test-admin', NODE_ENV: 'test', PREORDER_LIMIT: '100000' },
     stdio: ['ignore', 'pipe', 'inherit'],
   });
   try {
@@ -201,6 +201,85 @@ async function main() {
     const gl = (await admin('GET', `/api/admin/orders?kind=guest&limit=200&volunteer_id=${vols[0].id}`)).json;
     assert.ok(gl.rows.length > 0 && gl.rows.every((o) => o.kind === 'guest' && o.volunteer_id === vols[0].id), 'orders filter by volunteer');
 
+    // ---- phone pre-orders: 300 phones submit at once, cashiers take the cash ----
+    const phone = client(); // no sign-in
+    const pubMenu = (await phone('GET', '/api/public/menu')).json;
+    assert.ok(pubMenu.open && pubMenu.stalls.length, 'public menu is open');
+    assert.ok(!pubMenu.stalls.some((s) => s.items.some((i) => i.id === undefined || 'available' in i)), 'public menu only lists what can be ordered');
+    const pubItems = pubMenu.stalls.flatMap((s) => s.items);
+    const pubPrice = Object.fromEntries(pubItems.map((i) => [i.id, i.price_cents]));
+    const rndP = (k) => Math.floor(Math.random() * k);
+    const pres = [];
+    const preStart = Date.now();
+    await Promise.all(Array.from({ length: 30 }, async (_, w) => {
+      for (let k = 0; k < 10; k++) {
+        const ref = crypto.randomUUID();
+        const lines = Array.from({ length: 1 + rndP(3) }, () => ({ item_id: pubItems[rndP(pubItems.length)].id, qty: 1 + rndP(3) }));
+        const merged = new Map(); for (const l of lines) merged.set(l.item_id, (merged.get(l.item_id) || 0) + l.qty);
+        const total = [...merged].reduce((s, [id, q]) => s + pubPrice[id] * q, 0);
+        const body = { client_ref: ref, lines, expected_total_cents: total };
+        const rs = await Promise.all(k % 3 === 0 ? [phone('POST', '/api/public/preorders', body), phone('POST', '/api/public/preorders', body)] : [phone('POST', '/api/public/preorders', body)]);
+        assert.equal(rs.filter((r) => r.status === 201).length, 1, `one pre-order per submit ${JSON.stringify(rs[0].json)}`);
+        assert.ok(rs.every((r) => r.json.preorder.code === rs[0].json.preorder.code), 'a double tap returns the same code');
+        assert.equal(rs[0].json.preorder.total_cents, total);
+        pres.push({ ...rs[0].json.preorder, ref, merged });
+      }
+    }));
+    const preSecs = (Date.now() - preStart) / 1000;
+    assert.equal(new Set(pres.map((p) => p.code)).size, pres.length, 'every open pre-order has its own code');
+    assert.ok(pres.every((p) => /^\d{4}$/.test(p.code)), 'codes are 4 digits');
+    const stale = await phone('POST', '/api/public/preorders', { client_ref: crypto.randomUUID(), lines: [{ item_id: pubItems[0].id, qty: 1 }], expected_total_cents: pubItems[0].price_cents + 1 });
+    assert.equal(stale.status, 409); assert.equal(stale.json.error, 'PRICE_CHANGED');
+    let rp = (await admin('GET', '/api/admin/report')).json;
+    assert.equal(rp.preorders.submitted, pres.length); assert.equal(rp.preorders.waiting, pres.length);
+    assert.equal(rp.totals.sales_cents, collected, 'unpaid pre-orders are not sales');
+
+    // two cashiers look up the same code: the second is told who has it, and can take over
+    const [pa, pb] = [pres[0], pres[1]];
+    assert.equal((await cashiers[0]('POST', '/api/preorders/claim', { code: pa.code })).json.status, 'ok');
+    const second = (await cashiers[1]('POST', '/api/preorders/claim', { code: pa.code })).json;
+    assert.equal(second.status, 'claimed'); assert.equal(second.claimed_by, 'Cashier 1');
+    assert.equal((await cashiers[1]('POST', '/api/preorders/claim', { code: pa.code, take_over: true })).json.status, 'ok');
+    assert.equal((await cashiers[2]('POST', '/api/preorders/claim', { code: '0000' })).json.status, 'not_found');
+    // a customer who starts over cancels their code
+    assert.equal((await phone('POST', `/api/public/preorders/${pb.code}/cancel`, { ref: pb.ref })).status, 200);
+    assert.equal((await cashiers[2]('POST', '/api/preorders/claim', { code: pb.code })).json.status, 'cancelled');
+
+    // every cashier tries to pay every pre-order at once: each one is paid exactly once
+    const toPay = pres.filter((p) => p !== pb);
+    let prePaid = 0; let preSales = 0; let doublePay = 0;
+    const paidBy = new Map();
+    await Promise.all(cashiers.slice(0, 5).map(async (call, ci) => {
+      for (const p of [...toPay].sort(() => Math.random() - 0.5)) {
+        const lines = [...p.merged].map(([item_id, qty]) => ({ item_id, qty }));
+        const r = await call('POST', '/api/orders', { client_ref: crypto.randomUUID(), lines, expected_total_cents: p.total_cents, cash_tendered_cents: p.total_cents, preorder_id: p.id });
+        if (r.status === 201) {
+          assert.ok(!paidBy.has(p.id), `pre-order ${p.code} paid twice`);
+          paidBy.set(p.id, ci); prePaid++; preSales += p.total_cents; perCashier[ci] += p.total_cents;
+          assert.equal(r.json.order.preorder_code, p.code);
+        } else {
+          assert.equal(r.status, 409, JSON.stringify(r.json)); assert.equal(r.json.error, 'PREORDER_PAID'); doublePay++;
+        }
+      }
+    }));
+    assert.equal(prePaid, toPay.length, 'every pre-order was paid once');
+    collected += preSales; accepted += prePaid;
+    const st = (await phone('GET', `/api/public/preorders/${pa.code}?ref=${pa.ref}`)).json.preorder;
+    assert.equal(st.status, 'paid'); assert.ok(st.order_id >= 100, 'the phone learns it was paid');
+    assert.equal((await cashiers[3]('POST', '/api/preorders/claim', { code: pa.code })).json.status, 'paid', 'a paid code says so at the cashier');
+    assert.equal((await phone('GET', `/api/public/preorders/${pa.code}?ref=${crypto.randomUUID()}`)).status, 404, 'a stranger cannot read someone else\'s order');
+    rp = (await admin('GET', '/api/admin/report')).json;
+    assert.equal(rp.preorders.paid, prePaid); assert.equal(rp.preorders.cancelled, 1); assert.equal(rp.preorders.waiting, 0);
+    assert.equal(rp.preorders.orders, prePaid); assert.equal(rp.preorders.sales_cents, preSales);
+    assert.equal(rp.totals.sales_cents, collected, 'paid pre-orders count as sales');
+    // the admin can close phone ordering
+    await admin('PUT', '/api/admin/settings', { preorders_enabled: false });
+    assert.equal((await phone('GET', '/api/public/menu')).json.open, false);
+    assert.equal((await phone('POST', '/api/public/preorders', { client_ref: crypto.randomUUID(), lines: [{ item_id: pubItems[0].id, qty: 1 }], expected_total_cents: pubItems[0].price_cents })).status, 403);
+    await admin('PUT', '/api/admin/settings', { preorders_enabled: true });
+    assert.equal((await phone('GET', '/api/admin/report')).status, 401, 'the public cannot see the admin');
+    assert.equal((await phone('GET', '/api/menu')).status, 401, 'or the cashier menu');
+
     // ---- refunds: six cashiers refund overlapping tickets at the same moment ----
     const rnd = (k) => Math.floor(Math.random() * k);
     const allTickets = [];
@@ -312,9 +391,10 @@ async function main() {
     assert.equal((await cashiers[5]('GET', '/api/menu')).status, 401);
 
     console.log(`\nPASS  ${accepted} orders from ${CASHIERS} simultaneous cashiers in ${secs.toFixed(1)}s (${Math.round(accepted / secs)} orders/sec)`);
-    console.log(`      $${(collected / 100).toFixed(2)} collected = $${(rep.totals.sales_cents / 100).toFixed(2)} in the report, ${ticketCount} tickets`);
+    console.log(`      $${(collected / 100).toFixed(2)} collected = $${(rep2.totals.sales_cents / 100).toFixed(2)} in the report, ${ticketCount} tickets`);
     console.log(`      ${duplicates} duplicate submissions absorbed, ${priceRejects} stale-price orders rejected and re-rung`);
     console.log(`      ${refunded.size} tickets refunded ($${(refundedCents / 100).toFixed(2)}) in ${rSecs.toFixed(1)}s by 6 cashiers at once, ${refundConflicts} double-refund attempts refused`);
+    console.log(`      ${pres.length} phone pre-orders from 30 phones at once in ${preSecs.toFixed(1)}s, all with their own code; ${prePaid} paid by 5 cashiers racing, ${doublePay} double payments refused`);
     console.log(`      ${guest.orders} Guest service orders (${guest.tickets} free tickets) mixed in, logged per volunteer, kept out of sales and drawers`);
     console.log(`      net $${(rep2.totals.net_cents / 100).toFixed(2)} and every drawer reconcile to the cent\n`);
   } finally {

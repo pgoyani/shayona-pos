@@ -140,6 +140,35 @@ Reporting:
 Guest tickets can't be refunded for cash. An admin can void a guest order made
 by mistake.
 
+## Phone pre-orders (QR code)
+
+Customers scan a QR code, pick their food on their phone at `/order`, and get
+a 4-digit code. They show the code at any cashier and pay cash.
+
+1. The cashier presses **Pre-order** and types the code. The customer's items
+   load into the normal order with today's prices.
+2. Add or remove items if they change their mind, then **Cash collected** (or
+   **Guest service**) as usual. Tickets print as normal.
+
+What to know:
+- A pre-order is not a sale. It shows in sales only once a cashier takes the
+  cash. Unpaid codes expire after 3 hours.
+- A pre-order can only be paid once. If another cashier already has it open,
+  the screen says who, with a **Take it over** button. A paid code says
+  "Already paid", so don't take cash twice.
+- The phone page shows prices and the total. When the cashier takes the cash,
+  the phone changes to "Paid".
+- To start over, the customer presses **Start a new order** on the phone. That
+  cancels their old code.
+- **Admin > Settings > Phone ordering** opens or closes phone ordering and
+  prints a QR poster. Print the poster from the admin on your live https
+  site, so the QR has the address phones can reach.
+- The dashboard shows how many pre-orders were submitted, paid, waiting and
+  not paid. Orders that came from a phone are labelled with their code.
+
+The phone page needs the site to be on the internet (your https host).
+Phones on mobile data cannot reach a laptop on the venue WiFi.
+
 ## How concurrent cashiers are handled
 
 - Every order is written in a single database transaction, so two cashiers

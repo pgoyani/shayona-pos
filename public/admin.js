@@ -155,6 +155,7 @@ async function refreshDashboard() {
           h('button', { class: 'seg' + (A.itemSort === 'qty' ? ' on' : ''), onclick: () => { A.itemSort = 'qty'; refreshDashboard(); } }, 'By quantity'))),
       h('div', { class: 'stack' },
         card('Cashiers', 'Cash each drawer should hold: sales minus refunds paid out. Guest service orders take no cash.', cashierTable(rep)),
+        rep.preorders.submitted ? card('Phone pre-orders', 'Customers who ordered from the QR code. Only paid ones count in sales.', preorderCard(rep)) : null,
         rep.guest.byVolunteer.length ? card('Guest service by volunteer', null, volunteerFeed(rep), h('button', { class: 'btn small', onclick: () => go('guests') }, 'Details')) : null,
         rep.recentRefunds.length ? card('Latest refunds', null, refundList(rep)) : null,
         card('Latest orders', null, recentList(rep)))));
@@ -267,9 +268,25 @@ function recentList(rep) {
   return h('div', { class: 'feed' }, rep.recent.map((o) => h('div', { class: 'feed-row' + (o.voided_at ? ' void' : '') },
     h('div', { class: 'feed-main' }, h('strong', { class: 'num' }, `#${o.id}`), h('span', { class: 'muted num' }, ` ${timeOf(o.created_at)} · ${o.cashier_name}${o.voided_at ? ' · VOIDED' : ''}`),
       o.kind === 'guest' ? h('div', { class: 'guest-small' }, `Guest service · ${o.volunteer_name}`) : null,
+      o.preorder_code ? h('div', { class: 'pre-small' }, `Phone pre-order ${o.preorder_code}`) : null,
       h('div', { class: 'muted small clip' }, o.summary),
       o.refunded ? h('div', { class: 'refunded-small' }, `${o.refunded} ticket${o.refunded === 1 ? '' : 's'} refunded`) : null),
     o.kind === 'guest' ? h('span', { class: 'guest-free' }, 'No charge') : h('strong', { class: 'num' }, money(o.total_cents)))));
+}
+
+function preorderCard(rep) {
+  const p = rep.preorders;
+  const share = rep.totals.orders ? Math.round((p.orders / rep.totals.orders) * 100) : 0;
+  const stat = (label, value, sub) => h('div', { class: 'mini' }, h('div', { class: 'tile-label' }, label), h('div', { class: 'mini-value num' }, value), h('div', { class: 'muted small num' }, sub || ' '));
+  return h('div', {},
+    h('div', { class: 'minis' },
+      stat('Submitted', p.submitted),
+      stat('Paid', p.paid, money(p.sales_cents)),
+      stat('Waiting now', p.waiting, p.waiting ? money(p.waiting_cents) + ' to collect' : ''),
+      stat('Not paid', p.expired + p.cancelled, p.cancelled ? `${p.cancelled} cancelled on the phone` : 'expired after 3 hours')),
+    h('p', { class: 'muted small', style: { marginTop: '10px' } },
+      p.orders && share < 1 ? 'Under 1% of paid orders came from phones.' : `${share}% of paid orders came from phones.`,
+      p.avg_wait_ms ? ` Average ${Math.max(1, Math.round(p.avg_wait_ms / 60000))} min from ordering on the phone to paying.` : ''));
 }
 
 function volunteerFeed(rep) {
@@ -310,7 +327,8 @@ async function renderOrders() {
         h('td', { class: 'num' }, h('strong', {}, '#' + o.id)),
         h('td', { class: 'num' }, new Date(o.created_at).toLocaleString([], { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })),
         h('td', {}, o.cashier_name),
-        h('td', { class: 'muted' }, o.kind === 'guest' ? h('div', { class: 'guest-small' }, `Guest service · ${o.volunteer_name}`) : null, o.summary,
+        h('td', { class: 'muted' }, o.kind === 'guest' ? h('div', { class: 'guest-small' }, `Guest service · ${o.volunteer_name}`) : null,
+          o.preorder_code ? h('div', { class: 'pre-small' }, `Phone pre-order ${o.preorder_code}`) : null, o.summary,
           o.voided_at ? h('div', { class: 'voidnote' }, 'Voided' + (o.void_reason ? ': ' + o.void_reason : '')) : null,
           o.refunded ? h('div', { class: 'refunded-small' }, `${o.refunded} ticket${o.refunded === 1 ? '' : 's'} refunded (${money(o.refunded_cents)})`) : null),
         h('td', { class: 'r num' }, o.kind === 'guest' ? [h('span', { class: 'guest-free' }, 'No charge'), h('div', { class: 'muted small' }, `${money(o.total_cents)} value`)] : h('strong', {}, money(o.total_cents))),
@@ -557,11 +575,12 @@ function renderSettings() {
   const s = A.catalog.settings;
   const eventName = h('input', { class: 'input', value: s.event_name, maxLength: 60 });
   const footer = h('input', { class: 'input', value: s.receipt_footer, maxLength: 60 });
+  const refundLine = h('input', { class: 'input', value: s.refund_line, maxLength: 80, placeholder: 'Leave empty to print no refund line' });
   const paper = h('select', { class: 'input' }, h('option', { value: '80', selected: s.paper_width === '80' }, '80 mm (standard)'), h('option', { value: '58', selected: s.paper_width === '58' }, '58 mm (narrow)'));
   const showPrice = h('input', { type: 'checkbox', checked: s.show_price_on_ticket === '1' });
   const save = guard(async (e) => {
     e.preventDefault();
-    A.catalog.settings = await call('PUT', '/api/admin/settings', { event_name: eventName.value, receipt_footer: footer.value, paper_width: paper.value, show_price_on_ticket: showPrice.checked });
+    A.catalog.settings = await call('PUT', '/api/admin/settings', { event_name: eventName.value, receipt_footer: footer.value, refund_line: refundLine.value, paper_width: paper.value, show_price_on_ticket: showPrice.checked });
     toast('Settings saved', 'ok'); renderShell();
   });
   const confirmBox = h('input', { class: 'input', placeholder: 'Type RESET', style: { width: '140px' } });
@@ -570,10 +589,12 @@ function renderSettings() {
     h('section', { class: 'card narrow' }, h('h2', {}, 'Event and tickets'),
       h('form', { class: 'form', onsubmit: save },
         h('label', { class: 'field' }, 'Event name (top of every ticket)', eventName),
+        h('label', { class: 'field' }, 'Refund line (small, under the ticket code)', refundLine),
         h('label', { class: 'field' }, 'Ticket footer line', footer),
         h('label', { class: 'field' }, 'Receipt paper width', paper),
         h('label', { class: 'check' }, showPrice, 'Print the price on each ticket'),
         h('div', {}, h('button', { class: 'btn primary' }, 'Save settings')))),
+    phoneOrderingCard(),
     h('section', { class: 'card narrow' }, h('h2', {}, 'Data'),
       h('p', { class: 'muted' }, 'Download everything as a spreadsheet, or take a full copy of the database as a backup.'),
       h('div', { class: 'inline', style: { marginTop: '10px' } },
@@ -583,6 +604,58 @@ function renderSettings() {
       h('p', { class: 'muted' }, 'Deletes every order and restarts order numbers at 100. The menu, cashiers and volunteers are kept. Use this after testing, before the event starts. It cannot be undone.'),
       h('div', { class: 'inline', style: { marginTop: '10px' } }, confirmBox,
         h('button', { class: 'btn danger', onclick: guard(async () => { await call('POST', '/api/admin/reset-sales', { confirm: confirmBox.value.trim() }); confirmBox.value = ''; toast('All sales cleared', 'ok'); }) }, 'Delete all sales'))));
+}
+
+// ---------- phone ordering (QR code) ----------
+function phoneOrderingCard() {
+  const s = A.catalog.settings;
+  const url = h('input', { class: 'input', value: location.origin + '/order', 'aria-label': 'Phone order page address' });
+  const img = h('img', { class: 'qr', alt: 'QR code for the phone order page' });
+  const warn = h('p', { class: 'qr-warn' });
+  const paint = () => {
+    const u = url.value.trim();
+    img.src = '/api/admin/qr.svg?url=' + encodeURIComponent(u);
+    const local = /\/\/(localhost|127\.|10\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.)/.test(u);
+    warn.textContent = local ? 'This address only works on this network. Phones on mobile data cannot open it. Open the admin from your live https site before printing the poster.' : '';
+  };
+  url.addEventListener('change', paint);
+  paint();
+  const poster = () => {
+    const u = url.value.trim();
+    const w = window.open('', '_blank');
+    if (!w) return toast('Allow pop-ups to print the poster', 'error');
+    const esc = (t) => String(t).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+    w.document.write(`<!doctype html><html><head><meta charset="utf-8"><title>Order poster</title><style>
+      @page { size: letter; margin: 0.6in; }
+      body { font-family: -apple-system, "Segoe UI", Roboto, Arial, sans-serif; color: #111; text-align: center; margin: 0; }
+      h1 { font-size: 40px; margin: 10px 0 4px; } .event { font-size: 20px; color: #444; }
+      img { width: 4.6in; height: 4.6in; margin: 26px auto 18px; display: block; image-rendering: pixelated; }
+      ol { text-align: left; display: inline-block; font-size: 22px; line-height: 1.6; margin: 0; padding-left: 1.2em; }
+      .url { margin-top: 22px; font-size: 16px; color: #444; word-break: break-all; }
+    </style></head><body>
+      <div class="event">${esc(s.event_name)}</div>
+      <h1>Order from your phone</h1>
+      <img src="${esc('/api/admin/qr.svg?url=' + encodeURIComponent(u))}" alt="">
+      <ol><li>Scan this code with your phone camera</li><li>Pick your food and press Submit</li><li>Show your 4-digit code at any cashier and pay cash</li></ol>
+      <div class="url">${esc(u)}</div>
+      <script>document.querySelector('img').onload = () => setTimeout(() => print(), 200);<\/script>
+    </body></html>`);
+    w.document.close();
+  };
+  return h('section', { class: 'card narrow' }, h('h2', {}, 'Phone ordering'),
+    h('p', { class: 'muted' }, 'Customers scan a QR code, pick their food on their phone and get a 4-digit code. A cashier types the code under Pre-order and takes the cash.'),
+    h('div', { style: { margin: '12px 0' } }, toggle(s.preorders_enabled === '1', s.preorders_enabled === '1' ? 'Open' : 'Closed', guard(async (v) => {
+      A.catalog.settings = await call('PUT', '/api/admin/settings', { preorders_enabled: v });
+      toast(v ? 'Phone ordering is open' : 'Phone ordering is closed. Codes already given still work at the cashier.', 'ok');
+      renderSettings();
+    }))),
+    h('div', { class: 'qr-wrap' }, img,
+      h('div', { class: 'qr-side' },
+        h('label', { class: 'field' }, 'Address in the QR code', url),
+        warn,
+        h('div', { class: 'inline', style: { marginTop: '10px' } },
+          h('button', { class: 'btn primary', onclick: poster }, 'Print poster'),
+          h('a', { class: 'btn', href: '/order', target: '_blank' }, 'Open the phone page')))));
 }
 
 // ---------- start ----------

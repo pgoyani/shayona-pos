@@ -10,6 +10,7 @@ const S = {
   cart: [],            // [{ item_id, qty }] in the order items were added
   ref: null,           // unique reference for the cart being built (makes retries safe)
   tendered: null,      // cash received in cents, optional
+  preorder: null,      // { id, code, total_cents } when the cart came from a phone pre-order
   busy: false,
   last: null,          // { order, change } of the order just settled
   online: true,
@@ -20,15 +21,19 @@ let pollTimer = null;
 const newRef = () => (crypto.randomUUID ? crypto.randomUUID() : Date.now().toString(36) + '-' + Math.random().toString(36).slice(2) + Math.random().toString(36).slice(2));
 
 // ---------- cart ----------
-function saveCart() { localStorage.setItem('pos_cart', JSON.stringify({ cashier: S.cashier && S.cashier.id, cart: S.cart, ref: S.ref })); }
+function saveCart() { localStorage.setItem('pos_cart', JSON.stringify({ cashier: S.cashier && S.cashier.id, cart: S.cart, ref: S.ref, preorder: S.preorder })); }
 function restoreCart() {
   try {
     const c = JSON.parse(localStorage.getItem('pos_cart') || 'null');
-    if (c && S.cashier && c.cashier === S.cashier.id && Array.isArray(c.cart)) { S.cart = c.cart; S.ref = c.ref; }
+    if (c && S.cashier && c.cashier === S.cashier.id && Array.isArray(c.cart)) { S.cart = c.cart; S.ref = c.ref; S.preorder = c.preorder || null; }
   } catch (e) { /* ignore a corrupt saved cart */ }
   if (!S.ref) S.ref = newRef();
 }
-function clearCart() { S.cart = []; S.ref = newRef(); S.tendered = null; saveCart(); }
+function clearCart() { S.cart = []; S.ref = newRef(); S.tendered = null; S.preorder = null; saveCart(); }
+// Let go of a pre-order this cashier opened but did not ring up, so another cashier can take it.
+function releasePreorder() {
+  if (S.preorder) api('POST', `/api/preorders/${S.preorder.id}/release`).catch(() => {});
+}
 const qtyOf = (id) => (S.cart.find((l) => l.item_id === id) || { qty: 0 }).qty;
 function setQty(id, qty) {
   const line = S.cart.find((l) => l.item_id === id);
@@ -148,6 +153,7 @@ function renderHeader() {
     h('div', { class: 'brand' }, h('span', { class: 'diya-sm' }, '🪔'), h('strong', {}, S.menu.settings.event_name)),
     h('div', { class: 'status' + (S.online ? '' : ' off') }, h('i'), S.online ? 'Connected' : 'Offline'),
     h('div', { class: 'spacer' }),
+    h('button', { class: 'btn small preorder-btn', onclick: preorderDialog }, 'Pre-order'),
     h('button', { class: 'btn small', onclick: refundDialog }, 'Refund'),
     h('button', { class: 'btn small', onclick: recentDialog }, 'Recent orders'),
     h('button', { class: 'btn small printer-btn', onclick: printerDialog }),
@@ -225,6 +231,7 @@ function renderCart() {
     body = h('div', { class: 'done' + (guest ? ' guest' : '') },
       h('div', { class: 'done-tick' }, '✓'),
       h('div', { class: 'done-title' }, guest ? `Guest service #${o.id} saved` : `Order #${o.id} saved`),
+      o.preorder_code ? h('div', { class: 'done-sub' }, `From phone pre-order ${o.preorder_code}`) : null,
       h('div', { class: 'done-sub num' }, guest ? `${o.item_count} ticket${o.item_count === 1 ? '' : 's'} · no charge` : `${money(o.total_cents)} · ${o.item_count} ticket${o.item_count === 1 ? '' : 's'}`),
       S.last.change != null && h('div', { class: 'done-change num' }, 'Change due ', h('strong', {}, money(S.last.change))),
       h('button', { class: 'btn', onclick: () => Printer.print(o, S.menu.settings, true) }, 'Print tickets again'));
@@ -244,7 +251,9 @@ function renderCart() {
 
   put(el, 
     h('div', { class: 'cart-head' }, h('h2', {}, 'Current order'),
-      count ? h('button', { class: 'btn small danger', onclick: () => { clearCart(); renderMenu(); renderCart(); } }, 'Clear all') : null),
+      S.preorder ? h('span', { class: 'pre-tag num' }, `Pre-order ${S.preorder.code}`) : null,
+      count ? h('button', { class: 'btn small danger', onclick: () => { releasePreorder(); clearCart(); renderMenu(); renderCart(); } }, 'Clear all') : null),
+    S.preorder && count && total !== S.preorder.total_cents ? h('div', { class: 'pre-note num' }, `The phone showed ${money(S.preorder.total_cents)}. Charge the total below.`) : null,
     h('div', { class: 'lines' }, body),
     h('div', { class: 'cart-foot' },
       h('div', { class: 'total-row' }, h('span', {}, `Total · ${count} item${count === 1 ? '' : 's'}`), h('strong', { class: 'num' }, money(total))),
@@ -268,6 +277,7 @@ async function settle() {
       lines: S.cart.map((l) => ({ item_id: l.item_id, qty: l.qty })),
       expected_total_cents: total,
       cash_tendered_cents: S.tendered,
+      preorder_id: S.preorder ? S.preorder.id : undefined,
     });
     setOnline(true);
     S.last = { order, change: S.tendered != null ? S.tendered - order.total_cents : null };
@@ -278,7 +288,10 @@ async function settle() {
   } catch (e) {
     S.busy = false;
     if (e.status === 401) return signedOut();
-    if (e.code === 'PRICE_CHANGED' || e.code === 'ITEM_UNAVAILABLE') {
+    if (e.code === 'PREORDER_PAID' || e.code === 'PREORDER_NOT_FOUND') {
+      clearCart();
+      dialog('Do not take cash', h('p', { class: 'big-warn' }, e.message), []);
+    } else if (e.code === 'PRICE_CHANGED' || e.code === 'ITEM_UNAVAILABLE') {
       S.menu.version = -1; // force a refresh
       await loadMenu();
       S.tendered = null;
@@ -290,6 +303,64 @@ async function settle() {
     }
     renderMenu(); renderCart();
   }
+}
+
+// ---------- phone pre-orders ----------
+// The customer shows a 4-digit code from their phone. Typing it loads their
+// items into the normal cart; then it is a normal sale (or Guest service).
+function preorderDialog() {
+  if (S.busy) return;
+  const input = h('input', { class: 'input pre-input num', inputMode: 'numeric', maxLength: 5, placeholder: '4-digit code', autocomplete: 'off', 'aria-label': 'Pre-order code' });
+  const out = h('div', { class: 'pre-out' });
+  let busy = false;
+  const ago = (ms) => { const m = Math.max(0, Math.round((Date.now() - ms) / 60000)); return m < 1 ? 'just now' : `${m} min ago`; };
+
+  async function look(takeOver) {
+    const code = input.value.replace(/\D/g, '');
+    if (code.length < 4) { put(out, h('div', { class: 'refund-msg' }, 'Type the 4 digits from the customer’s phone.')); return; }
+    if (busy) return;
+    busy = true; put(out, h('p', { class: 'muted' }, 'Looking up…'));
+    let r;
+    try { r = await api('POST', '/api/preorders/claim', { code, take_over: !!takeOver }); } catch (e) {
+      busy = false;
+      if (e.status === 401) { close(); return signedOut(); }
+      put(out, h('div', { class: 'refund-msg' }, e.message)); return;
+    }
+    busy = false;
+    if (r.status === 'ok') return load(r.preorder);
+    const msg = {
+      not_found: [`No pre-order with code ${code}.`, 'Check the code on their phone, or ring the order up by hand.'],
+      paid: [`Already paid. Order #${r.order_id} by ${r.paid_by}${r.paid_at ? ` at ${timeOf(r.paid_at)}` : ''}.`, 'Do not take cash again. If they lost their tickets, use Recent orders or ask the admin.'],
+      expired: [`Code ${code} has expired.`, 'Ring the order up by hand.'],
+      cancelled: [`The customer cancelled code ${code} on their phone.`, 'Ask them for their new code, or ring the order up by hand.'],
+      claimed: [`${r.claimed_by} opened this pre-order ${ago(r.claimed_at)}.`, 'If that cashier is not serving this customer, take it over.'],
+    }[r.status] || ['Something is wrong with this code.', ''];
+    put(out, h('div', { class: 'pre-problem' + (r.status === 'paid' ? ' stop' : '') }, h('strong', {}, msg[0]), h('br'), h('span', {}, msg[1])),
+      r.status === 'claimed' ? h('button', { class: 'btn', onclick: () => look(true) }, 'Take it over') : null);
+    input.select();
+  }
+
+  function load(p) {
+    // Release whatever pre-order was on screen before, then use this one.
+    if (S.preorder && S.preorder.id !== p.id) releasePreorder();
+    S.cart = p.lines.map((l) => ({ item_id: l.item_id, qty: l.qty }));
+    S.ref = newRef();
+    S.tendered = null;
+    S.last = null;
+    S.preorder = { id: p.id, code: p.code, total_cents: p.total_cents };
+    saveCart();
+    close();
+    renderMenu(); renderCart();
+    const missing = p.lines.filter((l) => !sellable(S.items.get(l.item_id)));
+    toast(missing.length ? `Pre-order ${p.code} loaded. ${missing.length} item(s) sold out since: remove them.` : `Pre-order ${p.code} loaded. Take ${money(cartTotal())}.`, missing.length ? 'error' : 'ok');
+  }
+
+  const close = dialog('Pre-order from a phone', h('form', { class: 'pre', onsubmit: (e) => { e.preventDefault(); look(false); } },
+    h('p', { class: 'muted' }, 'Type the code on the customer’s phone. Their items load into the order so you can take the cash.'),
+    S.cart.length ? h('p', { class: 'pre-warn' }, 'This replaces the items in the current order.') : null,
+    h('div', { class: 'pre-row' }, input, h('button', { class: 'btn primary', type: 'submit' }, 'Load')),
+    out), [], { sticky: true });
+  setTimeout(() => input.focus(), 0);
 }
 
 // ---------- Guest service ----------
@@ -328,6 +399,7 @@ function guestDialog() {
         lines: S.cart.map((l) => ({ item_id: l.item_id, qty: l.qty })),
         expected_total_cents: cartTotal(),
         guest_phone: phone,
+        preorder_id: S.preorder ? S.preorder.id : undefined,
       });
       setOnline(true);
       S.last = { order, change: null };
@@ -341,6 +413,7 @@ function guestDialog() {
       renderCart();
       if (e.status === 401) { close(); return signedOut(); }
       if (e.code === 'VOLUNTEER_NOT_FOUND') { state = 'missing'; paint(); return; }
+      if (e.code === 'PREORDER_PAID' || e.code === 'PREORDER_NOT_FOUND') { close(); clearCart(); renderMenu(); renderCart(); dialog('Already done', h('p', { class: 'big-warn' }, e.message), []); return; }
       if (e.code === 'ITEM_UNAVAILABLE') {
         close();
         S.menu.version = -1; await loadMenu();
@@ -378,8 +451,9 @@ function guestDialog() {
 
 async function logout() {
   if (S.cart.length && !confirm('There is an order in progress. Lock the screen and discard it?')) return;
+  releasePreorder();
   try { await api('POST', '/api/logout'); } catch (e) { /* signing out locally is enough */ }
-  S.cart = []; S.ref = null; S.last = null; localStorage.removeItem('pos_cart');
+  S.cart = []; S.ref = null; S.last = null; S.preorder = null; localStorage.removeItem('pos_cart');
   signedOut();
 }
 
@@ -390,7 +464,8 @@ async function recentDialog() {
   dialog('Your recent orders', orders.length ? h('div', { class: 'recent' }, orders.map((o) =>
     h('div', { class: 'recent-row' + (o.voided_at ? ' void' : '') },
       h('div', {},
-        h('strong', { class: 'num' }, o.kind === 'guest' ? `#${o.id} · Guest service` : `#${o.id} · ${money(o.total_cents)}`), ' ', h('span', { class: 'muted' }, timeOf(o.created_at) + (o.voided_at ? ' · VOIDED' : '')),
+        h('strong', { class: 'num' }, o.kind === 'guest' ? `#${o.id} · Guest service` : `#${o.id} · ${money(o.total_cents)}`), ' ',
+        o.preorder_code ? h('span', { class: 'pre-tag small num' }, `Pre-order ${o.preorder_code}`) : null, ' ', h('span', { class: 'muted' }, timeOf(o.created_at) + (o.voided_at ? ' · VOIDED' : '')),
         h('div', { class: 'muted' }, o.lines.map((l) => `${l.qty}× ${l.item_name}`).join(', ')),
         o.refunds.length ? h('div', { class: 'refund-note' }, `Refunded: ${o.refunds.map((r) => `${o.id}-${r.ticket_no} ${r.item_name}`).join(', ')}`) : null),
       // Reprints leave out refunded tickets, so they can't be used again.

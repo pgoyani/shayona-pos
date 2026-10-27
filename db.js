@@ -63,7 +63,9 @@ CREATE TABLE IF NOT EXISTS orders (
   void_reason TEXT,
   kind TEXT NOT NULL DEFAULT 'sale',  -- 'sale' (cash) or 'guest' (Guest service, no money)
   volunteer_id INTEGER,
-  volunteer_name TEXT
+  volunteer_name TEXT,
+  preorder_id INTEGER,  -- set when the order was paid from a phone pre-order
+  preorder_code TEXT
 );
 CREATE INDEX IF NOT EXISTS orders_created ON orders(created_at);
 CREATE INDEX IF NOT EXISTS orders_cashier ON orders(cashier_id, created_at);
@@ -113,6 +115,27 @@ CREATE TABLE IF NOT EXISTS volunteers (
   created_at INTEGER NOT NULL
 );
 CREATE UNIQUE INDEX IF NOT EXISTS volunteers_phone ON volunteers(phone) WHERE archived = 0;
+-- Carts customers build on their phone. Nothing here is a sale: a pre-order
+-- only becomes an order when a cashier takes the cash (status -> 'paid').
+-- A code is unique among open pre-orders, and is reused after it closes.
+CREATE TABLE IF NOT EXISTS preorders (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  code TEXT NOT NULL,
+  client_ref TEXT NOT NULL UNIQUE,
+  lines_json TEXT NOT NULL,
+  total_cents INTEGER NOT NULL,
+  item_count INTEGER NOT NULL,
+  status TEXT NOT NULL DEFAULT 'open',  -- open | paid | expired | cancelled
+  created_at INTEGER NOT NULL,
+  expires_at INTEGER NOT NULL,
+  claimed_by INTEGER,
+  claimed_name TEXT,
+  claimed_at INTEGER,
+  order_id INTEGER,
+  paid_at INTEGER
+);
+CREATE UNIQUE INDEX IF NOT EXISTS preorders_open_code ON preorders(code) WHERE status = 'open';
+CREATE INDEX IF NOT EXISTS preorders_created ON preorders(created_at);
 CREATE TABLE IF NOT EXISTS settings (
   key TEXT PRIMARY KEY,
   value TEXT NOT NULL
@@ -124,7 +147,11 @@ const DEFAULT_SETTINGS = {
   receipt_footer: 'Happy Diwali!',
   paper_width: '80',
   show_price_on_ticket: '0',
+  preorders_enabled: '1',
+  refund_line: 'Not used? Bring this ticket back for a refund.',
 };
+const PREORDER_TTL = 3 * 3600 * 1000;   // an unpaid pre-order code lasts 3 hours
+const CLAIM_MS = 10 * 60 * 1000;        // a cashier's hold on a pre-order lasts 10 minutes
 const PUBLIC_SETTING_KEYS = Object.keys(DEFAULT_SETTINGS);
 
 const SAMPLE_MENU = [
@@ -148,6 +175,8 @@ function openDb(file) {
   if (!orderCols.has('kind')) db.exec("ALTER TABLE orders ADD COLUMN kind TEXT NOT NULL DEFAULT 'sale'");
   if (!orderCols.has('volunteer_id')) db.exec('ALTER TABLE orders ADD COLUMN volunteer_id INTEGER');
   if (!orderCols.has('volunteer_name')) db.exec('ALTER TABLE orders ADD COLUMN volunteer_name TEXT');
+  if (!orderCols.has('preorder_id')) db.exec('ALTER TABLE orders ADD COLUMN preorder_id INTEGER');
+  if (!orderCols.has('preorder_code')) db.exec('ALTER TABLE orders ADD COLUMN preorder_code TEXT');
   db.exec('CREATE INDEX IF NOT EXISTS orders_volunteer ON orders(volunteer_id, created_at)');
 
   const now = () => Date.now();
@@ -340,7 +369,7 @@ function openDb(file) {
   const purgeSessions = () => q('DELETE FROM sessions WHERE expires_at<=?').run(now());
 
   // ---------- orders ----------
-  const ORDER_COLS = 'id,client_ref,cashier_id,cashier_name,total_cents,item_count,cash_tendered_cents,created_at,voided_at,void_reason,kind,volunteer_id,volunteer_name';
+  const ORDER_COLS = 'id,client_ref,cashier_id,cashier_name,total_cents,item_count,cash_tendered_cents,created_at,voided_at,void_reason,kind,volunteer_id,volunteer_name,preorder_id,preorder_code';
   function loadOrder(id) {
     const o = q(`SELECT ${ORDER_COLS} FROM orders WHERE id=?`).get(id);
     if (!o) return null;
@@ -403,7 +432,7 @@ function openDb(file) {
 
   const getItemForSale = q(`SELECT i.id,i.name,i.price_cents,i.available,i.archived,s.id stall_id,s.name stall_name,s.active stall_active,s.archived stall_archived
                             FROM items i JOIN stalls s ON s.id=i.stall_id WHERE i.id=?`);
-  const insertOrder = q('INSERT INTO orders(client_ref,cashier_id,cashier_name,total_cents,item_count,cash_tendered_cents,created_at,kind,volunteer_id,volunteer_name) VALUES(?,?,?,?,?,?,?,?,?,?)');
+  const insertOrder = q('INSERT INTO orders(client_ref,cashier_id,cashier_name,total_cents,item_count,cash_tendered_cents,created_at,kind,volunteer_id,volunteer_name,preorder_id,preorder_code) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)');
   const insertLine = q('INSERT INTO order_lines(order_id,item_id,stall_id,item_name,stall_name,unit_price_cents,qty,line_total_cents) VALUES(?,?,?,?,?,?,?,?)');
   const orderByRef = q('SELECT id,cashier_id FROM orders WHERE client_ref=?');
 
@@ -413,11 +442,19 @@ function openDb(file) {
   // A Guest service order passes guest_phone instead of cash. The volunteer is
   // checked inside the same transaction, so a volunteer switched off in the
   // admin a second earlier cannot slip through.
-  const createOrderTx = db.transaction((cashier, { client_ref, lines, expected_total_cents, cash_tendered_cents, guest_phone }) => {
+  const createOrderTx = db.transaction((cashier, { client_ref, lines, expected_total_cents, cash_tendered_cents, guest_phone, preorder_id }) => {
     const existing = orderByRef.get(client_ref);
     if (existing) {
       if (existing.cashier_id !== cashier.id) throw new HttpError(409, 'REF_CONFLICT', 'Order reference already used');
       return { order: loadOrder(existing.id), duplicate: true };
+    }
+    // A phone pre-order can be paid once. This check and the order insert run
+    // in one transaction, so two cashiers can never both take cash for it.
+    const pre = preorder_id ? q('SELECT id,code,status,order_id FROM preorders WHERE id=?').get(preorder_id) : null;
+    if (preorder_id && !pre) throw new HttpError(404, 'PREORDER_NOT_FOUND', 'That pre-order no longer exists');
+    if (pre && pre.status === 'paid') {
+      const o = q('SELECT id,cashier_name,created_at FROM orders WHERE id=?').get(pre.order_id) || {};
+      throw new HttpError(409, 'PREORDER_PAID', `Pre-order ${pre.code} was already paid (order #${o.id} by ${o.cashier_name}). Do not take cash again.`, { order_id: o.id });
     }
     const guest = guest_phone != null;
     const volunteer = guest ? volunteerByPhone(guest_phone) : null;
@@ -445,11 +482,84 @@ function openDb(file) {
     if (cash_tendered_cents != null && cash_tendered_cents < total) throw new HttpError(400, 'TENDER_SHORT', 'Cash received is less than the total');
 
     const orderId = insertOrder.run(client_ref, cashier.id, cashier.name, total, count, guest ? null : (cash_tendered_cents ?? null), now(),
-      guest ? 'guest' : 'sale', guest ? volunteer.id : null, guest ? (volunteer.name || volunteer.phone) : null).lastInsertRowid;
+      guest ? 'guest' : 'sale', guest ? volunteer.id : null, guest ? (volunteer.name || volunteer.phone) : null, pre ? pre.id : null, pre ? pre.code : null).lastInsertRowid;
+    if (pre) q("UPDATE preorders SET status='paid', order_id=?, paid_at=? WHERE id=?").run(orderId, now(), pre.id);
     for (const [it, qty, lineTotal] of resolved) insertLine.run(orderId, it.id, it.stall_id, it.name, it.stall_name, it.price_cents, qty, lineTotal);
     return { order: loadOrder(orderId), duplicate: false };
   });
   const createOrder = (cashier, body) => createOrderTx.immediate(cashier, body);
+
+  // ---------- phone pre-orders ----------
+  const expirePreorders = () => q("UPDATE preorders SET status='expired' WHERE status='open' AND expires_at<=?").run(now());
+  function newCode() {
+    for (let i = 0; i < 60; i++) {
+      const code = String(1000 + crypto.randomInt(9000));
+      if (!q("SELECT 1 FROM preorders WHERE code=? AND status='open'").get(code)) return code;
+    }
+    // 4-digit codes nearly all in use: fall back to 5 digits
+    for (;;) { const code = String(10000 + crypto.randomInt(90000)); if (!q("SELECT 1 FROM preorders WHERE code=? AND status='open'").get(code)) return code; }
+  }
+  const preorderView = (p) => ({ id: p.id, code: p.code, status: p.status, total_cents: p.total_cents, item_count: p.item_count, lines: JSON.parse(p.lines_json),
+    created_at: p.created_at, expires_at: p.expires_at, order_id: p.order_id, paid_at: p.paid_at });
+
+  // Prices come from the menu, never from the phone. If the phone showed a
+  // different total, refuse so the customer sees the real one before submitting.
+  const createPreorderTx = db.transaction(({ client_ref, lines, expected_total_cents }) => {
+    const existing = q('SELECT * FROM preorders WHERE client_ref=?').get(client_ref);
+    if (existing) return { preorder: preorderView(existing), duplicate: true };
+    if (getSettingStmt.get('preorders_enabled').value !== '1') throw new HttpError(403, 'PREORDERS_CLOSED', 'Ordering from phones is closed right now. Please order at a cashier.');
+    expirePreorders();
+    if (q("SELECT COUNT(*) n FROM preorders WHERE status='open'").get().n >= 5000) throw new HttpError(503, 'TOO_MANY', 'Too many open pre-orders right now. Please order at a cashier.');
+    const merged = new Map();
+    for (const l of lines) merged.set(l.item_id, (merged.get(l.item_id) || 0) + l.qty);
+    const out = []; const unavailable = []; let total = 0; let count = 0;
+    for (const [itemId, qty] of merged) {
+      const it = getItemForSale.get(itemId);
+      if (!it || it.archived || !it.available || it.stall_archived || !it.stall_active) { unavailable.push(itemId); continue; }
+      out.push({ item_id: it.id, qty, name: it.name, stall_name: it.stall_name, price_cents: it.price_cents });
+      total += it.price_cents * qty; count += qty;
+    }
+    if (unavailable.length) throw new HttpError(409, 'ITEM_UNAVAILABLE', 'Some items just sold out. Check your order.', { item_ids: unavailable });
+    if (count > 60) throw new HttpError(400, 'TOO_MANY_ITEMS', 'That is a lot of food! For more than 60 items, please order at a cashier.');
+    if (expected_total_cents !== total) throw new HttpError(409, 'PRICE_CHANGED', 'Prices changed. Check the new total.', { total_cents: total });
+    const at = now();
+    const id = q('INSERT INTO preorders(code,client_ref,lines_json,total_cents,item_count,created_at,expires_at) VALUES(?,?,?,?,?,?,?)')
+      .run(newCode(), client_ref, JSON.stringify(out), total, count, at, at + PREORDER_TTL).lastInsertRowid;
+    return { preorder: preorderView(q('SELECT * FROM preorders WHERE id=?').get(id)), duplicate: false };
+  });
+  const createPreorder = (body) => createPreorderTx.immediate(body);
+
+  // What the phone polls to learn when it has been paid.
+  function preorderStatus(code, clientRef) {
+    const p = q('SELECT * FROM preorders WHERE code=? AND client_ref=?').get(code, clientRef);
+    if (!p) return null;
+    if (p.status === 'open' && p.expires_at <= now()) p.status = 'expired';
+    return preorderView(p);
+  }
+  function cancelPreorder(code, clientRef) {
+    q("UPDATE preorders SET status='cancelled' WHERE code=? AND client_ref=? AND status='open'").run(code, clientRef);
+  }
+
+  // A cashier types the code. The newest pre-order with that code wins, so an
+  // old expired one never hides a new one. The cashier gets a 10-minute hold.
+  const claimPreorderTx = db.transaction((cashier, code, takeOver) => {
+    expirePreorders();
+    const p = q("SELECT * FROM preorders WHERE code=? ORDER BY (status='open') DESC, id DESC LIMIT 1").get(code);
+    if (!p) return { status: 'not_found', code };
+    if (p.status === 'paid') {
+      const o = q('SELECT id,cashier_name,created_at FROM orders WHERE id=?').get(p.order_id) || {};
+      return { status: 'paid', code, order_id: o.id, paid_by: o.cashier_name, paid_at: p.paid_at };
+    }
+    if (p.status !== 'open') return { status: p.status, code };
+    const t = now();
+    if (p.claimed_by && p.claimed_by !== cashier.id && p.claimed_at > t - CLAIM_MS && !takeOver) {
+      return { status: 'claimed', code, claimed_by: p.claimed_name, claimed_at: p.claimed_at };
+    }
+    q('UPDATE preorders SET claimed_by=?, claimed_name=?, claimed_at=? WHERE id=?').run(cashier.id, cashier.name, t, p.id);
+    return { status: 'ok', preorder: preorderView(p) };
+  });
+  const claimPreorder = (cashier, code, takeOver) => claimPreorderTx.immediate(cashier, code, takeOver);
+  const releasePreorder = (cashier, id) => q("UPDATE preorders SET claimed_by=NULL, claimed_name=NULL, claimed_at=NULL WHERE id=? AND claimed_by=? AND status='open'").run(id, cashier.id);
 
   const recentOrdersForCashier = (cashierId, limit = 12) =>
     q('SELECT id FROM orders WHERE cashier_id=? ORDER BY id DESC LIMIT ?').all(cashierId, limit).map((r) => loadOrder(r.id));
@@ -516,7 +626,7 @@ function openDb(file) {
     const timeline = q(`SELECT (o.created_at / CAST(@bucket AS INTEGER)) * CAST(@bucket AS INTEGER) t, COUNT(*) orders, SUM(o.total_cents) sales_cents
                         FROM orders o WHERE ${W} GROUP BY t ORDER BY t`).all({ ...p, bucket });
 
-    const recent = q(`SELECT o.id,o.cashier_name,o.total_cents,o.item_count,o.created_at,o.voided_at,o.kind,o.volunteer_name, ${LINE_SUMMARY} summary, ${REFUND_COUNT} refunded
+    const recent = q(`SELECT o.id,o.cashier_name,o.total_cents,o.item_count,o.created_at,o.voided_at,o.kind,o.volunteer_name,o.preorder_code, ${LINE_SUMMARY} summary, ${REFUND_COUNT} refunded
                       FROM orders o WHERE o.created_at>=@from AND o.created_at<@to ORDER BY o.id DESC LIMIT 12`).all(p);
 
     // Refunds count in the period they were paid out, because that is when
@@ -599,12 +709,25 @@ function openDb(file) {
       if (c) c.guest_orders = g.n;
     }
 
-    return { generated_at: Date.now(), bucket_ms: bucket, totals, voided, last15, byStall, byItem: allItems, byCashier, timeline, recent, recentRefunds, guest };
+    // ---- phone pre-orders ----
+    const t = now();
+    const preorders = q(`SELECT COUNT(*) submitted,
+        COALESCE(SUM(status='paid'),0) paid,
+        COALESCE(SUM(status='open' AND expires_at>@t),0) waiting,
+        COALESCE(SUM(status='expired' OR (status='open' AND expires_at<=@t)),0) expired,
+        COALESCE(SUM(status='cancelled'),0) cancelled,
+        COALESCE(SUM(CASE WHEN status='open' AND expires_at>@t THEN total_cents END),0) waiting_cents,
+        AVG(CASE WHEN status='paid' THEN paid_at-created_at END) avg_wait_ms
+      FROM preorders WHERE created_at>=@from AND created_at<@to`).get({ ...p, t });
+    const fromPre = q(`SELECT COUNT(*) orders, COALESCE(SUM(total_cents),0) sales_cents FROM orders o WHERE ${W} AND o.preorder_id IS NOT NULL`).get(p);
+    preorders.orders = fromPre.orders; preorders.sales_cents = fromPre.sales_cents;
+
+    return { generated_at: Date.now(), bucket_ms: bucket, totals, voided, last15, byStall, byItem: allItems, byCashier, timeline, recent, recentRefunds, guest, preorders };
   }
 
   function exportRows({ from, to }) {
     return q(`SELECT o.id order_id, o.created_at, o.cashier_name, l.stall_name, l.item_name, l.qty, l.unit_price_cents, l.line_total_cents,
-                     o.total_cents order_total_cents, o.voided_at, o.kind, o.volunteer_name,
+                     o.total_cents order_total_cents, o.voided_at, o.kind, o.volunteer_name, o.preorder_code,
                      (SELECT COUNT(*) FROM refunds r WHERE r.line_id=l.id) refunded_qty,
                      (SELECT COALESCE(SUM(r.amount_cents),0) FROM refunds r WHERE r.line_id=l.id) refunded_cents
               FROM orders o JOIN order_lines l ON l.order_id=o.id
@@ -613,6 +736,7 @@ function openDb(file) {
 
   const resetSales = db.transaction(() => {
     q('DELETE FROM refunds').run();
+    q('DELETE FROM preorders').run();
     q('DELETE FROM order_lines').run();
     q('DELETE FROM orders').run();
     q("DELETE FROM sqlite_sequence WHERE name IN ('orders','order_lines','refunds')").run();
@@ -627,6 +751,7 @@ function openDb(file) {
     listCashiers, createCashier, updateCashier: (id, p) => updateCashier.immediate(id, p), archiveCashier: (id) => archiveCashier.immediate(id), cashierByPin,
     createSession, getSession, deleteSession, purgeSessions,
     listVolunteers, createVolunteer, updateVolunteer, archiveVolunteer, addVolunteers: (rows) => addVolunteersTx.immediate(rows), volunteerByPhone, normPhone,
+    createPreorder, preorderStatus, cancelPreorder, claimPreorder, releasePreorder, expirePreorders,
     createOrder, loadOrder, recentOrdersForCashier, setVoid, listOrders, report, exportRows, lookupTicket, refundTickets,
     resetSales: () => resetSales.immediate(),
   };
