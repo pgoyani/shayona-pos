@@ -165,7 +165,7 @@
   -webkit-print-color-adjust: exact; print-color-adjust: exact; }
 .t-item { margin: 3mm 0 2mm; font-size: 28pt; font-weight: 800; line-height: 1.1; overflow-wrap: anywhere; }
 .w58 .t-item { font-size: 22pt; }
-.t-refund { font-size: 8.5pt; font-weight: 600; margin-top: 1.5mm; }
+.t-refund { font-size: 8.5pt; font-weight: 400; margin-top: 1.5mm; }
 .w58 .t-stall { font-size: 11pt; }
 .t-price { font-size: 11pt; font-weight: 700; margin-bottom: 1mm; }
 .t-code-label { font-size: 7.5pt; font-weight: 700; letter-spacing: .12em; margin-top: .5mm; }
