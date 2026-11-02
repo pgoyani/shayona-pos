@@ -658,14 +658,14 @@ function phoneOrderingCard() {
       <div class="event">${esc(s.event_name)}</div>
       <h1>Order from your phone</h1>
       <img src="${esc('/api/admin/qr.svg?url=' + encodeURIComponent(u))}" alt="">
-      <ol><li>Scan this code with your phone camera</li><li>Pick your food and press Submit</li><li>Show your 4-digit code at any cashier and pay cash</li></ol>
+      <ol><li>Scan this code with your phone camera</li><li>Pick your food and press Submit</li><li>Show your 4-digit code at any cashier and pay</li></ol>
       <div class="url">${esc(u)}</div>
       <script>document.querySelector('img').onload = () => setTimeout(() => print(), 200);<\/script>
     </body></html>`);
     w.document.close();
   };
   return h('section', { class: 'card narrow' }, h('h2', {}, 'Phone ordering'),
-    h('p', { class: 'muted' }, 'Customers scan a QR code, pick their food on their phone and get a 4-digit code. A cashier types the code under Pre-order and takes the cash.'),
+    h('p', { class: 'muted' }, 'Customers scan a QR code, pick their food on their phone and get a 4-digit code. A cashier types the code under Pre-order code and takes payment.'),
     h('div', { style: { margin: '12px 0' } }, toggle(s.preorders_enabled === '1', s.preorders_enabled === '1' ? 'Open' : 'Closed', guard(async (v) => {
       A.catalog.settings = await call('PUT', '/api/admin/settings', { preorders_enabled: v });
       toast(v ? 'Phone ordering is open' : 'Phone ordering is closed. Codes already given still work at the cashier.', 'ok');

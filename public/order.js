@@ -1,6 +1,6 @@
 'use strict';
 // Phone order page. Customers pick food here, get a 4-digit code, then show
-// the code at any cashier and pay cash. Nothing is a sale until they pay.
+// the code at any cashier and pay by cash or card. Nothing is a sale until they pay.
 
 const app = document.getElementById('app');
 const O = {
@@ -100,8 +100,7 @@ function renderMenu() {
   if (!O.menu.stalls.length) return put(app, header(''), h('div', { class: 'closed' }, h('h2', {}, 'Nothing on the menu yet'), h('p', {}, 'Please check back in a few minutes.')));
   const count = cartCount();
   put(app,
-    header('Order here, then pay cash at any cashier'),
-    h('nav', { class: 'chips' }, O.menu.stalls.map((s) => h('a', { class: 'chip', href: `#stall-${s.id}` }, h('i', { style: { background: s.color } }), s.name))),
+    header('Order here, then pay at any cashier'),
     h('main', { class: 'menu' + (count ? ' has-bar' : '') }, O.menu.stalls.map((s) => h('section', { class: 'stall', id: `stall-${s.id}`, style: { '--c': s.color } },
       h('h2', {}, s.name),
       s.items.map((it) => h('div', { class: 'row' + (qtyOf(it.id) ? ' picked' : '') },
@@ -128,7 +127,7 @@ function renderReview() {
           h('div', { class: 'line-total num' }, money(it.price_cents * l.qty)));
       })),
       h('div', { class: 'total' }, h('span', {}, `Total · ${plural(count, 'item')}`), h('strong', { class: 'num' }, money(total))),
-      h('p', { class: 'note' }, `You will get a 4-digit code. Show it at any cashier and pay ${money(total)} in cash. Your food tickets print there.`),
+      h('p', { class: 'note' }, `You will get a 4-digit code. Show it at any cashier and pay ${money(total)} by cash or card. Your food tickets print there.`),
       h('button', { class: 'submit', disabled: O.busy, onclick: submit }, O.busy ? 'Sending…' : 'Submit order')));
 }
 
@@ -144,7 +143,7 @@ function renderCode() {
         h('div', { class: 'code num' }, p.code),
         paid ? h('div', { class: 'code-pay' }, `Order #${p.order_id}. Your tickets were printed at the cashier.`)
           : dead ? h('div', { class: 'code-pay' }, 'Please start a new order, or order at a cashier.')
-            : h('div', { class: 'code-pay' }, 'Pay ', h('strong', { class: 'num' }, money(p.total_cents)), ' cash')),
+            : h('div', { class: 'code-pay' }, 'Pay ', h('strong', { class: 'num' }, money(p.total_cents)), h('div', { class: 'code-how' }, 'Cash or card'))),
       paid ? null : h('div', { class: 'lines small-lines' }, p.lines.map((l) => h('div', { class: 'line' },
         h('div', { class: 'row-info' }, h('div', { class: 'row-name' }, `${l.qty}× ${l.name}`), h('div', { class: 'row-price' }, l.stall_name)),
         h('div', { class: 'line-total num' }, money(l.price_cents * l.qty))))),
