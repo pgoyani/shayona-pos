@@ -60,6 +60,12 @@ that case.
 If the printer is not connected when an order is settled, that order falls
 back to the browser print dialog so the customer still gets tickets.
 
+After the tickets, one more slip prints: an **order summary**. It lists each
+item with quantity and price, the total, and how it was paid (cash received
+and change, card, or Guest service). It is marked "Not a food ticket" so
+stalls don't accept it. Turn it off in **Admin > Settings**. Test prints
+have no summary.
+
 **Browser print dialog.** Choose it under **Printer** on a Mac where direct
 USB does not work. It works with any printer macOS can see. Install the
 printer on the Mac first (System Settings > Printers & Scanners, using the

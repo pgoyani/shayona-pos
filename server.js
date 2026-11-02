@@ -429,6 +429,7 @@ admin.put('/settings', (req, res) => {
   const patch = {};
   if (b.event_name !== undefined) patch.event_name = text(b.event_name, 'Event name', 60);
   if (b.receipt_footer !== undefined) patch.receipt_footer = String(b.receipt_footer).trim().slice(0, 60);
+  if (b.print_summary !== undefined) patch.print_summary = b.print_summary ? '1' : '0';
   if (b.refund_line !== undefined) patch.refund_line = String(b.refund_line).trim().slice(0, 80);
   if (b.paper_width !== undefined) { if (!['58', '80'].includes(String(b.paper_width))) throw bad('Paper width must be 58 or 80'); patch.paper_width = String(b.paper_width); }
   if (b.show_price_on_ticket !== undefined) patch.show_price_on_ticket = b.show_price_on_ticket ? '1' : '0';

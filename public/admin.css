@@ -171,3 +171,4 @@ a.btn { text-decoration: none; }
 /* Card payments */
 .card-small { color: #1d4ed8; font-size: 12px; font-weight: 700; }
 .card-col { color: #1e3a8a; }
+.card-note { margin-top: 8px; padding: 8px 12px; background: #e6edfc; color: #1e3a8a; border-radius: 10px; font-weight: 700; font-size: 14px; }

@@ -553,12 +553,21 @@ function refundDialog() {
     not_found: 'No such ticket. Check the code.',
   }[t.status] || '');
 
+  // Tell the cashier when tickets were bought by card. The refund is still cash.
+  function cardNote(ok) {
+    const n = ok.filter((t) => t.payment === 'card').length;
+    if (!n) return null;
+    const who = n === ok.length ? (n === 1 ? 'This ticket was' : 'These tickets were') : `${n} of these tickets ${n === 1 ? 'was' : 'were'}`;
+    return h('div', { class: 'card-note' }, `${who} paid by card. Refund in cash as usual.`);
+  }
+
   function paint() {
     if (done) {
       put(listEl);
       put(foot, h('div', { class: 'refund-done' },
         h('div', { class: 'done-tick' }, '✓'),
-        h('div', { class: 'refund-done-title' }, 'Give back ', h('strong', { class: 'num' }, money(done.total_cents))),
+        h('div', { class: 'refund-done-title' }, 'Give back ', h('strong', { class: 'num' }, money(done.total_cents)), ' in cash'),
+        done.refunds.some((r) => r.payment === 'card') ? h('div', { class: 'card-note' }, 'Paid by card, refunded in cash.') : null,
         h('div', { class: 'muted' }, `${done.refunds.length} ticket${done.refunds.length === 1 ? '' : 's'} refunded: ${done.refunds.map((r) => `${r.order_id}-${r.ticket_no}`).join(', ')}`),
         h('div', { class: 'muted' }, 'Keep the paper tickets in the refund envelope.'),
         h('button', { class: 'btn', onclick: () => { done = null; list.length = 0; ref = newRef(); msg.textContent = ''; paint(); input.focus(); } }, 'Refund more tickets')));
@@ -571,7 +580,8 @@ function refundDialog() {
         h('div', { class: 'refund-code num' }, t.code),
         h('div', { class: 'refund-info' },
           h('div', { class: 'line-name' }, t.item_name || '—'),
-          h('div', { class: 'line-sub' }, t.status === 'ok' ? `${t.stall_name} · sold ${timeOf(t.sold_at)} by ${t.sold_by}` : statusText(t))),
+          h('div', { class: 'line-sub' }, t.status === 'ok' ? `${t.stall_name} · sold ${timeOf(t.sold_at)} by ${t.sold_by}` : statusText(t)),
+          t.status === 'ok' && t.payment === 'card' ? h('div', { class: 'paid-card' }, 'Paid by card') : null),
         h('div', { class: 'line-total num' }, t.status === 'ok' ? money(t.amount_cents) : '—'),
         h('button', { class: 'line-x', 'aria-label': 'Remove', title: 'Remove', onclick: () => { list.splice(i, 1); ref = newRef(); paint(); input.focus(); } }, '×')))
       : h('p', { class: 'empty' }, 'No tickets added yet.'));
@@ -580,6 +590,7 @@ function refundDialog() {
     put(foot,
       h('div', { class: 'total-row' }, h('span', {}, `To give back · ${ok.length} ticket${ok.length === 1 ? '' : 's'}`), h('strong', { class: 'num' }, money(total))),
       list.length > ok.length ? h('div', { class: 'muted small' }, 'Tickets marked in red are not included.') : null,
+      cardNote(ok),
       h('button', { class: 'settle refund-go', disabled: !ok.length || busy, onclick: submit },
         busy ? 'Saving…' : ok.length ? `Refund ${ok.length} ticket${ok.length === 1 ? '' : 's'} · give back ${money(total)}` : 'Refund'));
   }

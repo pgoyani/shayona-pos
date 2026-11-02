@@ -383,6 +383,7 @@ async function adminRefundDialog(orderId) {
   paint();
   dialog(`Refund from order #${order.id}`, h('div', { class: 'admin-refund' },
     h('p', { class: 'muted' }, 'Use this when the customer does not have the ticket. It is recorded as an Admin refund, so give the cash from the admin float, not a cashier drawer.'),
+    order.payment === 'card' ? h('div', { class: 'card-note' }, 'This order was paid by card. Refund in cash as usual.') : null,
     h('div', { class: 'ticket-picks' }, tickets.map((t) => {
       const r = done.get(t.n);
       return h('label', { class: 'ticket-pick' + (r ? ' done' : '') },
@@ -597,9 +598,10 @@ function renderSettings() {
   const refundLine = h('input', { class: 'input', value: s.refund_line, maxLength: 80, placeholder: 'Leave empty to print no refund line' });
   const paper = h('select', { class: 'input' }, h('option', { value: '80', selected: s.paper_width === '80' }, '80 mm (standard)'), h('option', { value: '58', selected: s.paper_width === '58' }, '58 mm (narrow)'));
   const showPrice = h('input', { type: 'checkbox', checked: s.show_price_on_ticket === '1' });
+  const printSummary = h('input', { type: 'checkbox', checked: s.print_summary !== '0' });
   const save = guard(async (e) => {
     e.preventDefault();
-    A.catalog.settings = await call('PUT', '/api/admin/settings', { event_name: eventName.value, receipt_footer: footer.value, refund_line: refundLine.value, paper_width: paper.value, show_price_on_ticket: showPrice.checked });
+    A.catalog.settings = await call('PUT', '/api/admin/settings', { event_name: eventName.value, receipt_footer: footer.value, refund_line: refundLine.value, paper_width: paper.value, show_price_on_ticket: showPrice.checked, print_summary: printSummary.checked });
     toast('Settings saved', 'ok'); renderShell();
   });
   const confirmBox = h('input', { class: 'input', placeholder: 'Type RESET', style: { width: '140px' } });
@@ -612,6 +614,7 @@ function renderSettings() {
         h('label', { class: 'field' }, 'Ticket footer line', footer),
         h('label', { class: 'field' }, 'Receipt paper width', paper),
         h('label', { class: 'check' }, showPrice, 'Print the price on each ticket'),
+        h('label', { class: 'check' }, printSummary, 'Print an order summary slip after the tickets'),
         h('div', {}, h('button', { class: 'btn primary' }, 'Save settings')))),
     phoneOrderingCard(),
     h('section', { class: 'card narrow' }, h('h2', {}, 'Data'),

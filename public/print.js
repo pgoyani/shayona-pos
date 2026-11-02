@@ -33,6 +33,28 @@ const Printer = (() => {
     return out.filter((t) => !refunded.has(t.n));
   }
 
+  // The last slip of every order: what was ordered, prices and the total. It is
+  // not a food ticket, and says so, so a stall never takes it for one.
+  // Turned off in Admin > Settings. Test prints (order 0) get no summary.
+  const wantsSummary = (order, settings) => settings.print_summary !== '0' && !!order.id && Array.isArray(order.lines) && order.lines.length > 0;
+  function summaryOf(order) {
+    const guest = order.kind === 'guest';
+    const refunds = order.refunds || [];
+    let pay;
+    if (guest) pay = ['Guest service - no charge'];
+    else if (order.payment === 'card') pay = ['Paid by card'];
+    else if (order.cash_tendered_cents != null) pay = [`Cash received ${money(order.cash_tendered_cents)}`, `Change ${money(order.cash_tendered_cents - order.total_cents)}`];
+    else pay = ['Paid in cash'];
+    return {
+      guest,
+      lines: order.lines.map((l) => ({ qty: l.qty, name: l.item_name, amount: l.line_total_cents != null ? l.line_total_cents : l.unit_price_cents * l.qty })),
+      total: order.total_cents,
+      count: order.lines.reduce((s, l) => s + l.qty, 0),
+      pay,
+      refunded: refunds.length ? `Refunded: ${refunds.length} ticket${refunds.length === 1 ? '' : 's'}  -${money(refunds.reduce((s, r) => s + r.amount_cents, 0))}` : null,
+    };
+  }
+
   const stamp = (ms) => new Date(ms).toLocaleString([], { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
 
   // ----- browser printing -----
@@ -52,15 +74,37 @@ const Printer = (() => {
         h('div', { class: 't-meta' }, `${t.n} of ${t.of} in this order`),
         h('div', { class: 't-meta' }, `${stamp(order.created_at)}  ·  ${order.cashier_name}`),
         settings.refund_line && h('div', { class: 't-refund' }, settings.refund_line),
-        settings.receipt_footer && h('div', { class: 't-footer' }, settings.receipt_footer))));
+        settings.receipt_footer && h('div', { class: 't-footer' }, settings.receipt_footer))),
+      wantsSummary(order, settings) && summaryBrowser(order, settings, reprint));
     // Size the page to the tallest ticket, so a long item name never spills
     // onto a second page and short tickets don't waste paper.
+    // The summary gets its own page size, so a long order doesn't make every ticket long.
     root.classList.add('measuring');
-    const tallest = Math.max(...[...root.children].map((t) => t.getBoundingClientRect().height), 0) * 25.4 / 96;
+    const mm = (el) => el.getBoundingClientRect().height * 25.4 / 96;
+    const tallest = Math.max(...[...root.querySelectorAll('.ticket:not(.summary)')].map(mm), 0);
+    const sum = root.querySelector('.summary');
+    const sumMm = sum ? mm(sum) : 0;
     root.classList.remove('measuring');
     const pageMm = Math.max(60, Math.ceil(tallest + 4));
-    document.getElementById('page-size').textContent = `@page { size: ${width}mm ${pageMm}mm; margin: 0; }`;
+    document.getElementById('page-size').textContent = `@page { size: ${width}mm ${pageMm}mm; margin: 0; }`
+      + (sum ? ` @page summary { size: ${width}mm ${Math.max(60, Math.ceil(sumMm + 4))}mm; margin: 0; }` : '');
     window.print();
+  }
+
+  function summaryBrowser(order, settings, reprint) {
+    const s = summaryOf(order);
+    return h('div', { class: 'ticket summary' },
+      h('div', { class: 't-event' }, settings.event_name),
+      h('div', { class: 's-title' }, 'ORDER SUMMARY'),
+      h('div', { class: 's-sub' }, 'Not a food ticket'),
+      reprint && h('div', { class: 't-reprint' }, 'REPRINT'),
+      h('div', { class: 's-meta' }, h('span', {}, `Order #${order.id}`), h('span', {}, stamp(order.created_at))),
+      h('div', { class: 's-meta' }, h('span', {}, `Cashier: ${order.cashier_name}`), order.preorder_code ? h('span', {}, `Pre-order ${order.preorder_code}`) : null),
+      h('div', { class: 's-lines' }, s.lines.map((l) => h('div', { class: 's-line' }, h('span', {}, `${l.qty} x ${l.name}`), s.guest ? null : h('span', {}, money(l.amount))))),
+      s.guest ? null : h('div', { class: 's-total' }, h('span', {}, `TOTAL (${s.count} item${s.count === 1 ? '' : 's'})`), h('span', {}, money(s.total))),
+      h('div', { class: 's-pay' }, s.pay.map((p) => h('div', {}, p))),
+      s.refunded && h('div', { class: 's-pay' }, s.refunded),
+      settings.receipt_footer && h('div', { class: 't-footer' }, settings.receipt_footer));
   }
 
   // ----- direct USB (ESC/POS) -----
@@ -118,6 +162,29 @@ const Printer = (() => {
       if (settings.receipt_footer) block(settings.receipt_footer, cols);
       b.push(ESC, 0x64, cutter.feed);                  // feed a few lines so the text clears the blade
       b.push(...cutter.bytes);                         // cut
+    }
+    if (wantsSummary(order, settings)) {
+      const s = summaryOf(order);
+      const pad = (left, right) => { const room = cols - right.length - 1; const ls = wrap(left, room); ls.forEach((l, i) => line(i === ls.length - 1 ? l.padEnd(cols - right.length) + right : l)); };
+      const rule = () => line('-'.repeat(cols));
+      b.push(ESC, 0x61, 1); size(0x00); bold(false); block(settings.event_name, cols);
+      size(0x11); bold(true); line('ORDER SUMMARY'); size(0x00); bold(false);
+      line('Not a food ticket');
+      if (reprint) { bold(true); line('** REPRINT **'); bold(false); }
+      b.push(ESC, 0x61, 0);                            // left
+      rule();
+      pad(`Order #${order.id}`, ascii(stamp(order.created_at)));
+      pad(`Cashier: ${order.cashier_name}`, order.preorder_code ? `Pre-order ${order.preorder_code}` : '');
+      rule();
+      for (const l of s.lines) pad(`${l.qty} x ${l.name}`, s.guest ? '' : money(l.amount));
+      rule();
+      if (!s.guest) { bold(true); size(0x01); pad(`TOTAL (${s.count} item${s.count === 1 ? '' : 's'})`, money(s.total)); size(0x00); bold(false); }
+      s.pay.forEach((p) => line(ascii(p)));
+      if (s.refunded) line(ascii(s.refunded));
+      b.push(ESC, 0x61, 1);
+      if (settings.receipt_footer) { b.push(LF); block(settings.receipt_footer, cols); }
+      b.push(ESC, 0x64, cutter.feed);
+      b.push(...cutter.bytes);
     }
     return new Uint8Array(b);
   }

@@ -150,6 +150,7 @@ const DEFAULT_SETTINGS = {
   show_price_on_ticket: '0',
   preorders_enabled: '1',
   refund_line: 'Not used? Bring this ticket back for a refund.',
+  print_summary: '1',
 };
 const PREORDER_TTL = 3 * 3600 * 1000;   // an unpaid pre-order code lasts 3 hours
 const CLAIM_MS = 10 * 60 * 1000;        // a cashier's hold on a pre-order lasts 10 minutes
@@ -397,12 +398,12 @@ function openDb(file) {
   // Everything a cashier needs to see about one ticket before refunding it.
   function lookupTicket(orderId, ticketNo) {
     const code = `${orderId}-${ticketNo}`;
-    const o = q('SELECT id,created_at,cashier_name,voided_at,kind FROM orders WHERE id=?').get(orderId);
+    const o = q('SELECT id,created_at,cashier_name,voided_at,kind,payment FROM orders WHERE id=?').get(orderId);
     if (!o) return { code, order_id: orderId, ticket_no: ticketNo, status: 'not_found' };
     const all = ticketsOf(orderId);
     const t = all[ticketNo - 1];
     if (!t) return { code, order_id: orderId, ticket_no: ticketNo, status: 'not_found' };
-    const base = { code, order_id: orderId, ticket_no: ticketNo, of: all.length, ...t, sold_at: o.created_at, sold_by: o.cashier_name };
+    const base = { code, order_id: orderId, ticket_no: ticketNo, of: all.length, ...t, sold_at: o.created_at, sold_by: o.cashier_name, payment: o.payment };
     if (o.voided_at) return { ...base, status: 'voided' };
     if (o.kind === 'guest') return { ...base, status: 'guest' }; // no money was taken, so nothing to give back
     const r = q('SELECT cashier_name,created_at FROM refunds WHERE order_id=? AND ticket_no=?').get(orderId, ticketNo);
