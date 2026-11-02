@@ -8,6 +8,7 @@ const A = {
   catalog: null,
   range: 'today',
   itemSort: 'sales_cents',
+  itemPay: 'all',     // items table: all (net of refunds), cash or card
   interval: localStorage.getItem('admin_interval') === '30' ? 30 : 15, // minutes per bar when looking at a single day
   orders: { range: 'today', cashier_id: '', search: '', kind: '', volunteer: null, offset: 0 },
   guests: { range: 'today' },
@@ -135,7 +136,9 @@ async function refreshDashboard() {
   const t = rep.totals;
   const tile = (label, value, sub, cls) => h('div', { class: 'tile ' + (cls || '') }, h('div', { class: 'tile-label' }, label), h('div', { class: 'tile-value num' }, value), h('div', { class: 'tile-sub num' }, sub || ' '));
   const tiles = h('div', { class: 'tiles' },
-    tile('Net sales', money(t.net_cents), t.refunds_cents ? `${money(t.sales_cents)} sales − ${money(t.refunds_cents)} refunds` : rep.voided.orders ? `${rep.voided.orders} voided (${money(rep.voided.sales_cents)}) not counted` : 'Cash collected', 'hero'),
+    tile('Net sales', money(t.net_cents),
+      t.card_cents || t.refunds_cents ? [`${money(t.cash_sales_cents)} cash`, `${money(t.card_cents)} card`, t.refunds_cents ? `−${money(t.refunds_cents)} refunds` : null].filter(Boolean).join(' · ')
+        : rep.voided.orders ? `${rep.voided.orders} voided (${money(rep.voided.sales_cents)}) not counted` : 'Cash collected', 'hero'),
     tile('Orders', t.orders.toLocaleString(), t.orders ? `Average ${money(Math.round(t.sales_cents / t.orders))}` : 'Customers served'),
     tile('Tickets sold', t.net_items.toLocaleString(), t.orders ? (t.items / t.orders).toFixed(1) + ' per order' : ''),
     tile('Refunds', money(t.refunds_cents), `${t.refunded_tickets} ticket${t.refunded_tickets === 1 ? '' : 's'}`, t.refunds_cents ? 'warn' : ''),
@@ -149,12 +152,14 @@ async function refreshDashboard() {
           h('button', { class: 'seg' + (A.interval === m ? ' on' : ''), onclick: () => { A.interval = m; localStorage.setItem('admin_interval', m); refreshDashboard(); } }, `${m} min`)))),
       card('Sales by stall', null, stallBars(rep))),
     h('div', { class: 'cols' },
-      card('Items', 'Best sellers first. Items with no sales are listed at the bottom.', itemsTable(rep),
+      card('Items', A.itemPay === 'all' ? 'Best sellers first, after refunds. Items with no sales are listed at the bottom.' : `Only items paid by ${A.itemPay}, before refunds.`, itemsTable(rep),
+        h('div', { class: 'inline' }, h('div', { class: 'range' }, [['all', 'All'], ['cash', 'Cash'], ['card', 'Card']].map(([k, l]) =>
+          h('button', { class: 'seg' + (A.itemPay === k ? ' on' : ''), onclick: () => { A.itemPay = k; refreshDashboard(); } }, l))),
         h('div', { class: 'range' },
           h('button', { class: 'seg' + (A.itemSort === 'sales_cents' ? ' on' : ''), onclick: () => { A.itemSort = 'sales_cents'; refreshDashboard(); } }, 'By sales'),
-          h('button', { class: 'seg' + (A.itemSort === 'qty' ? ' on' : ''), onclick: () => { A.itemSort = 'qty'; refreshDashboard(); } }, 'By quantity'))),
+          h('button', { class: 'seg' + (A.itemSort === 'qty' ? ' on' : ''), onclick: () => { A.itemSort = 'qty'; refreshDashboard(); } }, 'By quantity')))),
       h('div', { class: 'stack' },
-        card('Cashiers', 'Cash each drawer should hold: sales minus refunds paid out. Guest service orders take no cash.', cashierTable(rep)),
+        card('Cashiers', 'In drawer = cash sales minus refunds (refunds are always paid in cash). Card is the total to match with that cashier\'s Clover report.', cashierTable(rep)),
         rep.preorders.submitted ? card('Phone pre-orders', 'Customers who ordered from the QR code. Only paid ones count in sales.', preorderCard(rep)) : null,
         rep.guest.byVolunteer.length ? card('Guest service by volunteer', null, volunteerFeed(rep), h('button', { class: 'btn small', onclick: () => go('guests') }, 'Details')) : null,
         rep.recentRefunds.length ? card('Latest refunds', null, refundList(rep)) : null,
@@ -228,7 +233,12 @@ function stallBars(rep) {
 function itemsTable(rep) {
   if (!rep.byItem.length) return h('p', { class: 'empty' }, 'No items on the menu yet.');
   const key = A.itemSort;
-  const rows = [...rep.byItem].sort((a, b) => b[key] - a[key] || b.sales_cents - a.sales_cents);
+  const pay = A.itemPay;
+  // Cash and Card views show what was sold each way, before refunds.
+  const view = (r) => pay === 'all' ? r : pay === 'card'
+    ? { ...r, qty: r.card_qty || 0, sales_cents: r.card_cents || 0, refunded: 0, guest_qty: 0 }
+    : { ...r, qty: (r.gross_qty || 0) - (r.card_qty || 0), sales_cents: (r.gross_cents || 0) - (r.card_cents || 0), refunded: 0, guest_qty: 0 };
+  const rows = rep.byItem.map(view).sort((a, b) => b[key] - a[key] || b.sales_cents - a.sales_cents);
   const max = Math.max(...rows.map((r) => r[key]), 1);
   const active = (r) => r.qty > 0 || r.refunded || r.guest_qty;
   let rank = 0;
@@ -247,11 +257,12 @@ function itemsTable(rep) {
 function cashierTable(rep) {
   if (!rep.byCashier.length) return h('p', { class: 'empty' }, 'No sales in this period yet.');
   return h('table', { class: 'table' },
-    h('thead', {}, h('tr', {}, h('th', {}, 'Cashier'), h('th', { class: 'r' }, 'Orders'), h('th', { class: 'r' }, 'Sales'), h('th', { class: 'r' }, 'Refunds'), h('th', { class: 'r' }, 'In drawer'))),
+    h('thead', {}, h('tr', {}, h('th', {}, 'Cashier'), h('th', { class: 'r' }, 'Orders'), h('th', { class: 'r' }, 'Sales'), h('th', { class: 'r' }, 'Card'), h('th', { class: 'r' }, 'Refunds'), h('th', { class: 'r' }, 'In drawer'))),
     h('tbody', {}, rep.byCashier.map((c) => h('tr', {},
       h('td', {}, h('strong', {}, c.name), h('div', { class: 'muted small num' }, `last ${timeOf(c.last_at)}`)),
       h('td', { class: 'r num' }, c.orders, c.guest_orders ? h('div', { class: 'guest-small' }, `+${c.guest_orders} guest`) : null),
       h('td', { class: 'r num' }, money(c.sales_cents)),
+      h('td', { class: 'r num' + (c.card_cents ? ' card-col' : ' muted') }, c.card_cents ? money(c.card_cents) : '–', c.card_orders ? h('div', { class: 'muted small' }, `${c.card_orders} order${c.card_orders === 1 ? '' : 's'}`) : null),
       h('td', { class: 'r num' + (c.refunds_cents ? ' neg' : ' muted') }, c.refunds_cents ? `−${money(c.refunds_cents)}` : '–'),
       h('td', { class: 'r num' }, h('strong', {}, money(c.cash_cents)))))));
 }
@@ -271,7 +282,7 @@ function recentList(rep) {
       o.preorder_code ? h('div', { class: 'pre-small' }, `Phone pre-order ${o.preorder_code}`) : null,
       h('div', { class: 'muted small clip' }, o.summary),
       o.refunded ? h('div', { class: 'refunded-small' }, `${o.refunded} ticket${o.refunded === 1 ? '' : 's'} refunded`) : null),
-    o.kind === 'guest' ? h('span', { class: 'guest-free' }, 'No charge') : h('strong', { class: 'num' }, money(o.total_cents)))));
+    o.kind === 'guest' ? h('span', { class: 'guest-free' }, 'No charge') : h('div', { class: 'r' }, h('strong', { class: 'num' }, money(o.total_cents)), o.payment === 'card' ? h('div', { class: 'card-small' }, 'Card') : null))));
 }
 
 function preorderCard(rep) {
@@ -303,7 +314,9 @@ async function renderOrders() {
   const params = new URLSearchParams({ from: r.from, to: r.to, limit: 50, offset: f.offset });
   if (f.cashier_id) params.set('cashier_id', f.cashier_id);
   if (f.search) params.set('search', f.search);
-  if (f.kind) params.set('kind', f.kind);
+  if (f.kind === 'guest') params.set('kind', 'guest');
+  if (f.kind === 'cash' || f.kind === 'card') { params.set('kind', 'sale'); params.set('payment', f.kind); }
+  if (f.kind === 'sale') params.set('kind', 'sale');
   if (f.volunteer) params.set('volunteer_id', f.volunteer.id);
   let data;
   try { data = await call('GET', '/api/admin/orders?' + params); } catch (e) { return; }
@@ -316,7 +329,7 @@ async function renderOrders() {
       h('input', { class: 'input', style: { width: '130px' }, placeholder: 'Order #', inputMode: 'numeric', value: f.search, onchange: (e) => reset({ search: e.target.value.replace(/\D/g, '') }) }),
       f.volunteer ? h('button', { class: 'btn small filter-chip', title: 'Show all orders', onclick: () => reset({ volunteer: null }) }, `Volunteer: ${f.volunteer.label}  ×`) : null,
       h('select', { class: 'input', 'aria-label': 'Order type', onchange: (e) => reset({ kind: e.target.value }) },
-        [['', 'All orders'], ['sale', 'Cash sales'], ['guest', 'Guest service']].map(([v, l]) => h('option', { value: v, selected: f.kind === v }, l))),
+        [['', 'All orders'], ['sale', 'All sales'], ['cash', 'Cash sales'], ['card', 'Card sales'], ['guest', 'Guest service']].map(([v, l]) => h('option', { value: v, selected: f.kind === v }, l))),
       h('select', { class: 'input', onchange: (e) => reset({ cashier_id: e.target.value }) },
         h('option', { value: '' }, 'All cashiers'), A.catalog.cashiers.map((c) => h('option', { value: c.id, selected: String(c.id) === String(f.cashier_id) }, c.name))),
       rangePicker(f.range, (v) => reset({ range: v })),
@@ -331,11 +344,17 @@ async function renderOrders() {
           o.preorder_code ? h('div', { class: 'pre-small' }, `Phone pre-order ${o.preorder_code}`) : null, o.summary,
           o.voided_at ? h('div', { class: 'voidnote' }, 'Voided' + (o.void_reason ? ': ' + o.void_reason : '')) : null,
           o.refunded ? h('div', { class: 'refunded-small' }, `${o.refunded} ticket${o.refunded === 1 ? '' : 's'} refunded (${money(o.refunded_cents)})`) : null),
-        h('td', { class: 'r num' }, o.kind === 'guest' ? [h('span', { class: 'guest-free' }, 'No charge'), h('div', { class: 'muted small' }, `${money(o.total_cents)} value`)] : h('strong', {}, money(o.total_cents))),
+        h('td', { class: 'r num' }, o.kind === 'guest' ? [h('span', { class: 'guest-free' }, 'No charge'), h('div', { class: 'muted small' }, `${money(o.total_cents)} value`)]
+          : [h('strong', {}, money(o.total_cents)), h('div', { class: o.payment === 'card' ? 'card-small' : 'muted small' }, o.payment === 'card' ? 'Card' : 'Cash')]),
         h('td', { class: 'r nowrap' }, o.voided_at
           ? h('button', { class: 'btn small', onclick: guard(async () => { await call('POST', `/api/admin/orders/${o.id}/restore`); renderOrders(); }) }, 'Restore')
           : [
             o.kind !== 'guest' && o.refunded < o.item_count ? h('button', { class: 'btn small', onclick: () => adminRefundDialog(o.id) }, 'Refund') : null, ' ',
+            o.kind !== 'guest' ? h('button', { class: 'btn small', title: 'Fix an order rung up with the wrong button', onclick: guard(async () => {
+              const to = o.payment === 'card' ? 'cash' : 'card';
+              if (!confirm(`Order #${o.id} (${money(o.total_cents)}) is marked as paid by ${o.payment}. Change it to ${to}?\n\nThis moves the money between the cashier's drawer and card totals.`)) return;
+              await call('POST', `/api/admin/orders/${o.id}/payment`, { payment: to }); toast(`Order #${o.id} is now ${to}`, 'ok'); renderOrders();
+            }) }, o.payment === 'card' ? 'Make cash' : 'Make card') : null, ' ',
             !o.refunded ? h('button', { class: 'btn small danger', onclick: guard(async () => {
               const reason = prompt(o.kind === 'guest' ? `Void Guest service order #${o.id}? It will be removed from the volunteer's totals.\n\nReason (optional):` : `Void order #${o.id} (${money(o.total_cents)})? It will be removed from sales totals.\n\nReason (optional):`, '');
               if (reason === null) return;

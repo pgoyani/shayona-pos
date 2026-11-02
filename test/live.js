@@ -143,7 +143,7 @@ async function main() {
 
     // ---- 1. rush: cashiers selling at once ----
     console.log(`1. ${CASHIERS} cashiers ringing up ${ORDERS_EACH} orders each at the same time`);
-    const exp = { sales: Array(CASHIERS).fill(0), orders: Array(CASHIERS).fill(0), tickets: 0, guestOrders: 0, guestTickets: 0, ticketsList: [] };
+    const exp = { card: Array(CASHIERS).fill(0), sales: Array(CASHIERS).fill(0), orders: Array(CASHIERS).fill(0), tickets: 0, guestOrders: 0, guestTickets: 0, ticketsList: [] };
     let dupes = 0; let errors = 0;
     const t1 = performance.now();
     await Promise.all(cashiers.map(async (call, ci) => {
@@ -153,8 +153,10 @@ async function main() {
         const total = [...merged].reduce((s, [id, q]) => s + priceOf[id] * q, 0);
         const count = [...merged.values()].reduce((a, b) => a + b, 0);
         const guest = i % 8 === 5;
+        const card = !guest && i % 3 === 1; // every third sale paid by card on Clover
         const body = guest ? { client_ref: crypto.randomUUID(), lines, expected_total_cents: total, guest_phone: volPhone }
-          : { client_ref: crypto.randomUUID(), lines, expected_total_cents: total, cash_tendered_cents: total + 500 };
+          : card ? { client_ref: crypto.randomUUID(), lines, expected_total_cents: total, payment: 'card' }
+            : { client_ref: crypto.randomUUID(), lines, expected_total_cents: total, cash_tendered_cents: total + 500 };
         const sends = i % 5 === 0 ? [call('POST', '/api/orders', body, 'order'), call('POST', '/api/orders', body, 'order')] : [call('POST', '/api/orders', body, 'order')];
         const rs = await Promise.all(sends);
         const created = rs.filter((r) => r.status === 201);
@@ -163,6 +165,7 @@ async function main() {
         const o = created[0].json.order;
         if (guest) { exp.guestOrders++; exp.guestTickets += count; } else {
           exp.sales[ci] += total; exp.orders[ci]++; exp.tickets += count;
+          if (card) exp.card[ci] += total;
           for (let n = 1; n <= count; n++) exp.ticketsList.push({ order_id: o.id, ticket_no: n, price: o.lines.flatMap((l) => Array(l.qty).fill(l.unit_price_cents))[n - 1], ci });
         }
       }
@@ -224,8 +227,9 @@ async function main() {
     const testSales = exp.sales.reduce((a, b) => a + b, 0);
     for (let i = 0; i < CASHIERS; i++) {
       const row = after.byCashier.find((r) => r.cashier_id === made.cashiers[i]);
-      check(!!row && row.cash_cents === exp.sales[i] - refundSum[i] && row.orders === exp.orders[i],
-        `Cashier ${i + 1} drawer ${money(exp.sales[i] - refundSum[i])}`, row ? `report says ${money(row.cash_cents)}, ${row.orders} orders` : 'missing');
+      const drawer = exp.sales[i] - exp.card[i] - refundSum[i];
+      check(!!row && row.cash_cents === drawer && row.card_cents === exp.card[i] && row.orders === exp.orders[i],
+        `Cashier ${i + 1} drawer ${money(drawer)}, card ${money(exp.card[i])}`, row ? `report says drawer ${money(row.cash_cents)}, card ${money(row.card_cents)}, ${row.orders} orders` : 'missing');
     }
     const st = after.byStall.find((s) => s.stall_id === made.stall);
     check(!!st && st.sales_cents === testSales - testRefunds, `test stall net sales ${money(testSales - testRefunds)}`, st ? `report says ${money(st.sales_cents)}` : 'missing');

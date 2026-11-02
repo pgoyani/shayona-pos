@@ -65,7 +65,8 @@ CREATE TABLE IF NOT EXISTS orders (
   volunteer_id INTEGER,
   volunteer_name TEXT,
   preorder_id INTEGER,  -- set when the order was paid from a phone pre-order
-  preorder_code TEXT
+  preorder_code TEXT,
+  payment TEXT NOT NULL DEFAULT 'cash'  -- cash | card (taken on Clover) | none (Guest service)
 );
 CREATE INDEX IF NOT EXISTS orders_created ON orders(created_at);
 CREATE INDEX IF NOT EXISTS orders_cashier ON orders(cashier_id, created_at);
@@ -177,6 +178,10 @@ function openDb(file) {
   if (!orderCols.has('volunteer_name')) db.exec('ALTER TABLE orders ADD COLUMN volunteer_name TEXT');
   if (!orderCols.has('preorder_id')) db.exec('ALTER TABLE orders ADD COLUMN preorder_id INTEGER');
   if (!orderCols.has('preorder_code')) db.exec('ALTER TABLE orders ADD COLUMN preorder_code TEXT');
+  if (!orderCols.has('payment')) {
+    db.exec("ALTER TABLE orders ADD COLUMN payment TEXT NOT NULL DEFAULT 'cash'");
+    db.exec("UPDATE orders SET payment='none' WHERE kind='guest'");
+  }
   db.exec('CREATE INDEX IF NOT EXISTS orders_volunteer ON orders(volunteer_id, created_at)');
 
   const now = () => Date.now();
@@ -369,7 +374,7 @@ function openDb(file) {
   const purgeSessions = () => q('DELETE FROM sessions WHERE expires_at<=?').run(now());
 
   // ---------- orders ----------
-  const ORDER_COLS = 'id,client_ref,cashier_id,cashier_name,total_cents,item_count,cash_tendered_cents,created_at,voided_at,void_reason,kind,volunteer_id,volunteer_name,preorder_id,preorder_code';
+  const ORDER_COLS = 'id,client_ref,cashier_id,cashier_name,total_cents,item_count,cash_tendered_cents,created_at,voided_at,void_reason,kind,volunteer_id,volunteer_name,preorder_id,preorder_code,payment';
   function loadOrder(id) {
     const o = q(`SELECT ${ORDER_COLS} FROM orders WHERE id=?`).get(id);
     if (!o) return null;
@@ -432,7 +437,7 @@ function openDb(file) {
 
   const getItemForSale = q(`SELECT i.id,i.name,i.price_cents,i.available,i.archived,s.id stall_id,s.name stall_name,s.active stall_active,s.archived stall_archived
                             FROM items i JOIN stalls s ON s.id=i.stall_id WHERE i.id=?`);
-  const insertOrder = q('INSERT INTO orders(client_ref,cashier_id,cashier_name,total_cents,item_count,cash_tendered_cents,created_at,kind,volunteer_id,volunteer_name,preorder_id,preorder_code) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)');
+  const insertOrder = q('INSERT INTO orders(client_ref,cashier_id,cashier_name,total_cents,item_count,cash_tendered_cents,created_at,kind,volunteer_id,volunteer_name,preorder_id,preorder_code,payment) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)');
   const insertLine = q('INSERT INTO order_lines(order_id,item_id,stall_id,item_name,stall_name,unit_price_cents,qty,line_total_cents) VALUES(?,?,?,?,?,?,?,?)');
   const orderByRef = q('SELECT id,cashier_id FROM orders WHERE client_ref=?');
 
@@ -442,7 +447,7 @@ function openDb(file) {
   // A Guest service order passes guest_phone instead of cash. The volunteer is
   // checked inside the same transaction, so a volunteer switched off in the
   // admin a second earlier cannot slip through.
-  const createOrderTx = db.transaction((cashier, { client_ref, lines, expected_total_cents, cash_tendered_cents, guest_phone, preorder_id }) => {
+  const createOrderTx = db.transaction((cashier, { client_ref, lines, expected_total_cents, cash_tendered_cents, guest_phone, preorder_id, payment }) => {
     const existing = orderByRef.get(client_ref);
     if (existing) {
       if (existing.cashier_id !== cashier.id) throw new HttpError(409, 'REF_CONFLICT', 'Order reference already used');
@@ -481,8 +486,9 @@ function openDb(file) {
     if (!guest && expected_total_cents !== total) throw new HttpError(409, 'PRICE_CHANGED', 'Prices changed. Check the new total.', { total_cents: total });
     if (cash_tendered_cents != null && cash_tendered_cents < total) throw new HttpError(400, 'TENDER_SHORT', 'Cash received is less than the total');
 
-    const orderId = insertOrder.run(client_ref, cashier.id, cashier.name, total, count, guest ? null : (cash_tendered_cents ?? null), now(),
-      guest ? 'guest' : 'sale', guest ? volunteer.id : null, guest ? (volunteer.name || volunteer.phone) : null, pre ? pre.id : null, pre ? pre.code : null).lastInsertRowid;
+    const pay = guest ? 'none' : payment === 'card' ? 'card' : 'cash';
+    const orderId = insertOrder.run(client_ref, cashier.id, cashier.name, total, count, pay === 'cash' ? (cash_tendered_cents ?? null) : null, now(),
+      guest ? 'guest' : 'sale', guest ? volunteer.id : null, guest ? (volunteer.name || volunteer.phone) : null, pre ? pre.id : null, pre ? pre.code : null, pay).lastInsertRowid;
     if (pre) q("UPDATE preorders SET status='paid', order_id=?, paid_at=? WHERE id=?").run(orderId, now(), pre.id);
     for (const [it, qty, lineTotal] of resolved) insertLine.run(orderId, it.id, it.stall_id, it.name, it.stall_name, it.price_cents, qty, lineTotal);
     return { order: loadOrder(orderId), duplicate: false };
@@ -575,12 +581,19 @@ function openDb(file) {
   const REFUND_COUNT = '(SELECT COUNT(*) FROM refunds r WHERE r.order_id=o.id)';
   const REFUND_SUM = '(SELECT COALESCE(SUM(r.amount_cents),0) FROM refunds r WHERE r.order_id=o.id)';
   const LINE_SUMMARY = `(SELECT group_concat(l.qty || '× ' || l.item_name, ', ') FROM order_lines l WHERE l.order_id=o.id)`;
-  function listOrders({ from, to, limit, offset, cashier_id, search, kind, volunteer_id }) {
+  // Fix an order rung up with the wrong button (Cash for a card payment, or the other way).
+  function setPayment(id, payment) {
+    const r = q("UPDATE orders SET payment=?, cash_tendered_cents=CASE WHEN ?='card' THEN NULL ELSE cash_tendered_cents END WHERE id=? AND kind='sale'").run(payment, payment, id);
+    if (!r.changes) throw new HttpError(404, 'NOT_FOUND', 'Order not found');
+  }
+
+  function listOrders({ from, to, limit, offset, cashier_id, search, kind, volunteer_id, payment }) {
     const where = ['o.created_at>=@from', 'o.created_at<@to'];
     const p = { from, to, limit, offset };
     if (cashier_id) { where.push('o.cashier_id=@cashier_id'); p.cashier_id = cashier_id; }
     if (kind) { where.push('o.kind=@kind'); p.kind = kind; }
     if (volunteer_id) { where.push('o.volunteer_id=@volunteer_id'); p.volunteer_id = volunteer_id; }
+    if (payment) { where.push('o.payment=@payment'); p.payment = payment; }
     if (search) { where.push('o.id=@search'); p.search = search; }
     const w = where.join(' AND ');
     const total = q(`SELECT COUNT(*) n FROM orders o WHERE ${w}`).get(p).n;
@@ -596,7 +609,10 @@ function openDb(file) {
     // they never inflate sales or what a cashier should have in the drawer.
     const W = "o.voided_at IS NULL AND o.kind='sale' AND o.created_at>=@from AND o.created_at<@to";
     const G = "o.voided_at IS NULL AND o.kind='guest' AND o.created_at>=@from AND o.created_at<@to";
-    const totals = q(`SELECT COUNT(*) orders, COALESCE(SUM(total_cents),0) sales_cents, COALESCE(SUM(item_count),0) items FROM orders o WHERE ${W}`).get(p);
+    const totals = q(`SELECT COUNT(*) orders, COALESCE(SUM(total_cents),0) sales_cents, COALESCE(SUM(item_count),0) items,
+                             COALESCE(SUM(CASE WHEN payment='card' THEN total_cents END),0) card_cents, COALESCE(SUM(payment='card'),0) card_orders
+                      FROM orders o WHERE ${W}`).get(p);
+    totals.cash_sales_cents = totals.sales_cents - totals.card_cents;
     const voided = q('SELECT COUNT(*) orders, COALESCE(SUM(total_cents),0) sales_cents FROM orders o WHERE o.voided_at IS NOT NULL AND o.kind=\'sale\' AND o.created_at>=@from AND o.created_at<@to').get(p);
     const since = Date.now() - 15 * 60000;
     const last15 = q(`SELECT COUNT(*) orders, COALESCE(SUM(total_cents),0) sales_cents FROM orders o WHERE ${W} AND o.created_at>=@since`).get({ ...p, since });
@@ -607,7 +623,10 @@ function openDb(file) {
                        WHERE ${W} GROUP BY l.stall_id ORDER BY sales_cents DESC`).all(p);
 
     const byItem = q(`SELECT l.item_id, COALESCE(i.name, MAX(l.item_name)) name, COALESCE(s.name, MAX(l.stall_name)) stall, COALESCE(s.color,'#64748b') color,
-                             SUM(l.qty) qty, SUM(l.line_total_cents) sales_cents
+                             SUM(l.qty) qty, SUM(l.line_total_cents) sales_cents,
+                             SUM(l.qty) gross_qty, SUM(l.line_total_cents) gross_cents,
+                             COALESCE(SUM(CASE WHEN o.payment='card' THEN l.qty END),0) card_qty,
+                             COALESCE(SUM(CASE WHEN o.payment='card' THEN l.line_total_cents END),0) card_cents
                       FROM order_lines l JOIN orders o ON o.id=l.order_id
                       LEFT JOIN items i ON i.id=l.item_id LEFT JOIN stalls s ON s.id=l.stall_id
                       WHERE ${W} GROUP BY l.item_id ORDER BY sales_cents DESC, qty DESC`).all(p);
@@ -618,7 +637,8 @@ function openDb(file) {
       .filter((r) => !sold.has(r.item_id)).map((r) => ({ ...r, qty: 0, sales_cents: 0 }));
 
     const byCashierSales = q(`SELECT o.cashier_id, COALESCE(c.name, MAX(o.cashier_name)) name, COUNT(*) orders,
-                                SUM(o.total_cents) sales_cents, MAX(o.created_at) last_at
+                                SUM(o.total_cents) sales_cents, MAX(o.created_at) last_at,
+                                COALESCE(SUM(CASE WHEN o.payment='card' THEN o.total_cents END),0) card_cents, COALESCE(SUM(o.payment='card'),0) card_orders
                          FROM orders o LEFT JOIN cashiers c ON c.id=o.cashier_id WHERE ${W}
                          GROUP BY o.cashier_id`).all(p);
 
@@ -626,7 +646,7 @@ function openDb(file) {
     const timeline = q(`SELECT (o.created_at / CAST(@bucket AS INTEGER)) * CAST(@bucket AS INTEGER) t, COUNT(*) orders, SUM(o.total_cents) sales_cents
                         FROM orders o WHERE ${W} GROUP BY t ORDER BY t`).all({ ...p, bucket });
 
-    const recent = q(`SELECT o.id,o.cashier_name,o.total_cents,o.item_count,o.created_at,o.voided_at,o.kind,o.volunteer_name,o.preorder_code, ${LINE_SUMMARY} summary, ${REFUND_COUNT} refunded
+    const recent = q(`SELECT o.id,o.cashier_name,o.total_cents,o.item_count,o.created_at,o.voided_at,o.kind,o.volunteer_name,o.preorder_code,o.payment, ${LINE_SUMMARY} summary, ${REFUND_COUNT} refunded
                       FROM orders o WHERE o.created_at>=@from AND o.created_at<@to ORDER BY o.id DESC LIMIT 12`).all(p);
 
     // Refunds count in the period they were paid out, because that is when
@@ -663,11 +683,13 @@ function openDb(file) {
                         FROM refunds r WHERE ${RW} GROUP BY r.cashier_id`).all(p)) {
       const key = String(rf.cashier_id);
       let row = cashierMap.get(key);
-      if (!row) { row = { cashier_id: rf.cashier_id, name: rf.cashier_id == null ? 'Admin' : rf.name, orders: 0, sales_cents: 0, last_at: rf.last_at, refunds_cents: 0, refunded_tickets: 0 }; cashierMap.set(key, row); }
+      if (!row) { row = { cashier_id: rf.cashier_id, name: rf.cashier_id == null ? 'Admin' : rf.name, orders: 0, sales_cents: 0, card_cents: 0, card_orders: 0, last_at: rf.last_at, refunds_cents: 0, refunded_tickets: 0 }; cashierMap.set(key, row); }
       row.refunds_cents += rf.cents; row.refunded_tickets += rf.tickets;
       row.last_at = Math.max(row.last_at || 0, rf.last_at);
     }
-    const byCashier = [...cashierMap.values()].map((c) => ({ ...c, cash_cents: c.sales_cents - c.refunds_cents })).sort((a, b) => b.cash_cents - a.cash_cents);
+    // Drawer = cash taken minus refunds. Refunds are always paid in cash, even
+    // for tickets bought by card, so they come out of the drawer too.
+    const byCashier = [...cashierMap.values()].map((c) => ({ ...c, cash_cents: c.sales_cents - c.card_cents - c.refunds_cents })).sort((a, b) => b.sales_cents - a.sales_cents);
 
     const tl = new Map(timeline.map((b) => [b.t, b]));
     for (const rb of q(`SELECT (r.created_at / CAST(@bucket AS INTEGER)) * CAST(@bucket AS INTEGER) t, SUM(r.amount_cents) cents
@@ -727,7 +749,7 @@ function openDb(file) {
 
   function exportRows({ from, to }) {
     return q(`SELECT o.id order_id, o.created_at, o.cashier_name, l.stall_name, l.item_name, l.qty, l.unit_price_cents, l.line_total_cents,
-                     o.total_cents order_total_cents, o.voided_at, o.kind, o.volunteer_name, o.preorder_code,
+                     o.total_cents order_total_cents, o.voided_at, o.kind, o.volunteer_name, o.preorder_code, o.payment,
                      (SELECT COUNT(*) FROM refunds r WHERE r.line_id=l.id) refunded_qty,
                      (SELECT COALESCE(SUM(r.amount_cents),0) FROM refunds r WHERE r.line_id=l.id) refunded_cents
               FROM orders o JOIN order_lines l ON l.order_id=o.id
@@ -752,7 +774,7 @@ function openDb(file) {
     createSession, getSession, deleteSession, purgeSessions,
     listVolunteers, createVolunteer, updateVolunteer, archiveVolunteer, addVolunteers: (rows) => addVolunteersTx.immediate(rows), volunteerByPhone, normPhone,
     createPreorder, preorderStatus, cancelPreorder, claimPreorder, releasePreorder, expirePreorders,
-    createOrder, loadOrder, recentOrdersForCashier, setVoid, listOrders, report, exportRows, lookupTicket, refundTickets,
+    createOrder, loadOrder, recentOrdersForCashier, setVoid, setPayment, listOrders, report, exportRows, lookupTicket, refundTickets,
     resetSales: () => resetSales.immediate(),
   };
 }

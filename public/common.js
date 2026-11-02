@@ -61,7 +61,7 @@ function dialog(title, body, actions, opts) {
     h('div', { class: 'dialog' + (o.wide ? ' wide' : ''), role: 'dialog', 'aria-label': title },
       h('h2', {}, title), body,
       h('div', { class: 'dialog-actions' }, (actions || []).map((a) => h('button', { class: 'btn ' + (a.class || ''), onclick: () => a.onclick ? a.onclick(close) : close() }, a.label)),
-        h('button', { class: 'btn', onclick: close }, 'Close'))));
+        h('button', { class: 'btn', onclick: close }, o.closeLabel || 'Close'))));
   document.body.append(overlay);
   return close;
 }

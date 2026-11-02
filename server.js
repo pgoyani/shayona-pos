@@ -179,11 +179,12 @@ app.post('/api/orders', requireCashier, (req, res) => {
   if (!Array.isArray(b.lines) || b.lines.length < 1 || b.lines.length > 100) throw bad('Order has no items');
   const lines = b.lines.map((l) => ({ item_id: int(l && l.item_id, 'Item', 1, 2 ** 31), qty: int(l && l.qty, 'Quantity', 1, 99) }));
   const expected = int(b.expected_total_cents, 'Total', 0, 10000000);
+  if (b.payment != null && !['cash', 'card'].includes(b.payment)) throw bad('Payment must be cash or card');
   const preorderId = b.preorder_id == null ? null : int(b.preorder_id, 'Pre-order', 1, 2 ** 31);
   const guestPhone = b.guest_phone == null ? null : String(b.guest_phone).slice(0, 30);
   if (guestPhone != null && !db.normPhone(guestPhone)) throw bad('Phone number needs 10 digits');
   const tendered = guestPhone != null || b.cash_tendered_cents == null ? null : int(b.cash_tendered_cents, 'Cash received', 0, 100000000);
-  const { order, duplicate } = db.createOrder(req.cashier, { client_ref: b.client_ref, lines, expected_total_cents: expected, cash_tendered_cents: tendered, guest_phone: guestPhone, preorder_id: preorderId });
+  const { order, duplicate } = db.createOrder(req.cashier, { client_ref: b.client_ref, lines, expected_total_cents: expected, cash_tendered_cents: tendered, guest_phone: guestPhone, preorder_id: preorderId, payment: b.payment === 'card' ? 'card' : 'cash' });
   if (!duplicate) broadcast('order', { id: order.id, total_cents: order.total_cents }, 'admin');
   res.status(duplicate ? 200 : 201).json({ order, duplicate });
 });
@@ -386,7 +387,8 @@ admin.get('/orders', (req, res) => {
   const limit = Math.min(Math.max(Number(req.query.limit) || 50, 1), 200);
   const offset = Math.max(Number(req.query.offset) || 0, 0);
   res.json(db.listOrders({ ...range(req), limit, offset, cashier_id: Number(req.query.cashier_id) || null, search: Number(req.query.search) || null,
-    kind: ['sale', 'guest'].includes(req.query.kind) ? req.query.kind : null, volunteer_id: Number(req.query.volunteer_id) || null }));
+    kind: ['sale', 'guest'].includes(req.query.kind) ? req.query.kind : null, volunteer_id: Number(req.query.volunteer_id) || null,
+    payment: ['cash', 'card'].includes(req.query.payment) ? req.query.payment : null }));
 });
 admin.get('/orders/:id', (req, res) => {
   const o = db.loadOrder(idParam(req));
@@ -402,6 +404,13 @@ admin.post('/orders/:id/refund', (req, res) => {
   const result = db.refundTickets({ id: null, name: 'Admin' }, body);
   if (!result.duplicate) broadcast('order', {}, 'admin');
   res.json(result);
+});
+admin.post('/orders/:id/payment', (req, res) => {
+  const pay = (req.body || {}).payment;
+  if (!['cash', 'card'].includes(pay)) throw bad('Payment must be cash or card');
+  db.setPayment(idParam(req), pay);
+  broadcast('order', {}, 'admin');
+  res.json({ ok: true });
 });
 admin.post('/orders/:id/void', (req, res) => {
   db.setVoid(idParam(req), true, String((req.body || {}).reason || '').slice(0, 200));
@@ -448,11 +457,11 @@ const money = (c) => (c / 100).toFixed(2);
 admin.get('/export.csv', (req, res) => {
   const fmt = new Intl.DateTimeFormat('en-CA', { timeZone: EVENT_TZ, year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false });
   const rows = db.exportRows(range(req));
-  const out = ['order_number,time_local,cashier,type,volunteer,stall,item,qty,unit_price,line_total,order_total,voided,refunded_qty,refunded_amount,preorder_code'];
+  const out = ['order_number,time_local,cashier,type,volunteer,stall,item,qty,unit_price,line_total,order_total,voided,refunded_qty,refunded_amount,preorder_code,payment'];
   for (const r of rows) {
     out.push([r.order_id, fmt.format(new Date(r.created_at)).replace(',', ''), r.cashier_name, r.kind === 'guest' ? 'guest service' : 'sale', r.volunteer_name || '',
       r.stall_name, r.item_name, r.qty,
-      money(r.unit_price_cents), money(r.line_total_cents), money(r.order_total_cents), r.voided_at ? 'yes' : '', r.refunded_qty || '', r.refunded_qty ? money(r.refunded_cents) : '', r.preorder_code || ''].map(csvCell).join(','));
+      money(r.unit_price_cents), money(r.line_total_cents), money(r.order_total_cents), r.voided_at ? 'yes' : '', r.refunded_qty || '', r.refunded_qty ? money(r.refunded_cents) : '', r.preorder_code || '', r.payment === 'none' ? '' : r.payment].map(csvCell).join(','));
   }
   res.setHeader('Content-Type', 'text/csv; charset=utf-8');
   res.setHeader('Content-Disposition', 'attachment; filename="pos-sales.csv"');

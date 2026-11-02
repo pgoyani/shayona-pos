@@ -140,6 +140,31 @@ Reporting:
 Guest tickets can't be refunded for cash. An admin can void a guest order made
 by mistake.
 
+## Card payments (Clover)
+
+Clover runs separately on each cashier's iPhone. This system never talks to
+it. The cashier types the amount into Clover by hand.
+
+1. Ring up the items, then press **Card**. A box shows the total in big
+   numbers.
+2. Type that amount into Clover and take the card. Turn tipping off in Clover.
+3. When Clover says Approved, press **Clover says Approved · Print N
+   tickets**. If the card is declined, press **Declined / cancel**. Nothing is
+   saved and the order stays on screen.
+
+What to know:
+- **Prices are checked twice.** Prices and stock are checked again when Card
+  is pressed. If a price changes while the card is being charged, the box
+  says so and how much to charge or give back before anything is saved.
+- **Part cash, part card:** split the items into two orders.
+- **Refunds are always cash.** That includes tickets bought by card, so
+  refunds come out of the cashier's drawer.
+- **Admin dashboard:** shows cash and card sales. Each cashier's **Card**
+  total should match their Clover report, and **In drawer** is cash only.
+  The Items list has All / Cash / Card buttons to see what sold each way.
+- **Wrong button pressed:** fix it in **Admin > Orders** with **Make card**
+  or **Make cash**. The CSV export has a `payment` column.
+
 ## Phone pre-orders (QR code)
 
 Customers scan a QR code, pick their food on their phone at `/order`, and get

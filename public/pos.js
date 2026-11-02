@@ -6,7 +6,6 @@ const S = {
   cashier: null,
   menu: null,          // { version, settings, stalls:[{id,name,color,items:[...]}] }
   items: new Map(),    // item id -> item with stall info
-  stall: 'all',
   cart: [],            // [{ item_id, qty }] in the order items were added
   ref: null,           // unique reference for the cart being built (makes retries safe)
   tendered: null,      // cash received in cents, optional
@@ -59,7 +58,6 @@ async function loadMenu() {
     S.menu = m;
     S.items = new Map();
     for (const st of m.stalls) for (const it of st.items) S.items.set(it.id, { ...it, stall_name: st.name, color: st.color });
-    if (S.stall !== 'all' && !m.stalls.some((s) => s.id === S.stall)) S.stall = 'all';
     if (S.tendered != null && S.tendered < cartTotal()) S.tendered = null;
     document.title = m.settings.event_name + ' · POS';
     if (document.querySelector('.pos')) { renderHeader(); renderMenu(); renderCart(); }
@@ -143,7 +141,11 @@ async function enter() {
 function renderPos() {
   put(app, h('div', { class: 'pos' },
     h('header', { class: 'topbar' }),
-    h('main', { class: 'menu-pane' }, h('nav', { class: 'tabs' }), h('div', { class: 'menu' })),
+    h('main', { class: 'menu-pane' },
+      h('nav', { class: 'actions' },
+        h('button', { class: 'action pre', onclick: preorderDialog }, h('span', { class: 'action-icon' }, '📱'), 'Pre-order code'),
+        h('button', { class: 'action', onclick: refundDialog }, h('span', { class: 'action-icon' }, '↩'), 'Refund tickets')),
+      h('div', { class: 'menu' })),
     h('aside', { class: 'cart' })));
   renderHeader(); renderMenu(); renderCart();
 }
@@ -153,8 +155,6 @@ function renderHeader() {
     h('div', { class: 'brand' }, h('span', { class: 'diya-sm' }, '🪔'), h('strong', {}, S.menu.settings.event_name)),
     h('div', { class: 'status' + (S.online ? '' : ' off') }, h('i'), S.online ? 'Connected' : 'Offline'),
     h('div', { class: 'spacer' }),
-    h('button', { class: 'btn small preorder-btn', onclick: preorderDialog }, 'Pre-order'),
-    h('button', { class: 'btn small', onclick: refundDialog }, 'Refund'),
     h('button', { class: 'btn small', onclick: recentDialog }, 'Recent orders'),
     h('button', { class: 'btn small printer-btn', onclick: printerDialog }),
     h('div', { class: 'who' }, S.cashier.name),
@@ -173,14 +173,8 @@ function renderPrinterButton() {
 }
 
 function renderMenu() {
-  const tabs = document.querySelector('.tabs');
   const stalls = S.menu.stalls;
-  put(tabs, 
-    h('button', { class: 'tab' + (S.stall === 'all' ? ' on' : ''), onclick: () => { S.stall = 'all'; renderMenu(); } }, 'All stalls'),
-    stalls.map((st) => h('button', { class: 'tab' + (S.stall === st.id ? ' on' : ''), style: { '--c': st.color }, onclick: () => { S.stall = st.id; renderMenu(); } },
-      h('i', { style: { background: st.color } }), st.name)));
-
-  const shown = S.stall === 'all' ? stalls : stalls.filter((s) => s.id === S.stall);
+  const shown = stalls; // every stall is always shown
   const menu = document.querySelector('.menu');
   if (!stalls.length) return put(menu, h('p', { class: 'empty' }, 'No stalls are open yet. Add them in the admin.'));
   put(menu, shown.map((st) => h('section', { class: 'stall', style: { '--c': st.color } },
@@ -234,6 +228,7 @@ function renderCart() {
       o.preorder_code ? h('div', { class: 'done-sub' }, `From phone pre-order ${o.preorder_code}`) : null,
       h('div', { class: 'done-sub num' }, guest ? `${o.item_count} ticket${o.item_count === 1 ? '' : 's'} · no charge` : `${money(o.total_cents)} · ${o.item_count} ticket${o.item_count === 1 ? '' : 's'}`),
       S.last.change != null && h('div', { class: 'done-change num' }, 'Change due ', h('strong', {}, money(S.last.change))),
+      o.payment === 'card' ? h('div', { class: 'done-card' }, 'Paid by card on Clover') : null,
       h('button', { class: 'btn', onclick: () => Printer.print(o, S.menu.settings, true) }, 'Print tickets again'));
   } else body = h('p', { class: 'empty' }, 'Tap items to start an order.');
 
@@ -262,13 +257,19 @@ function renderCart() {
         h('div', { class: 'chips' }, chip('Exact', total), tenderOptions(total).map((v) => chip(money(v).replace('.00', ''), v)), custom)) : null,
       // Always shown once there is an order, so the buttons above never shift when a bill is tapped.
       count ? h('div', { class: 'change-row' + (S.tendered != null ? ' on' : '') }, h('span', {}, 'Change due'), h('strong', { class: 'num' }, S.tendered != null ? money(S.tendered - total) : '–')) : null,
-      h('button', { class: 'settle', disabled: !count || blocked || S.busy, onclick: settle },
-        S.busy ? 'Saving…' : blocked ? 'Remove unavailable items' : count ? `Cash collected · Print ${count} ticket${count === 1 ? '' : 's'}` : 'Cash collected'),
+      blocked ? h('button', { class: 'settle', disabled: true }, 'Remove unavailable items')
+        : h('div', { class: 'pay-row' },
+          h('button', { class: 'settle pay', disabled: !count || S.busy, onclick: () => settle('cash') },
+            h('span', { class: 'pay-big' }, S.busy ? 'Saving…' : 'Cash'), h('span', { class: 'pay-small' }, count ? `Print ${count} ticket${count === 1 ? '' : 's'}` : 'collected')),
+          h('button', { class: 'settle pay card', disabled: !count || S.busy, onclick: cardDialog },
+            h('span', { class: 'pay-big' }, 'Card'), h('span', { class: 'pay-small' }, 'on Clover'))),
       count ? h('button', { class: 'btn guest-btn', disabled: blocked || S.busy, onclick: guestDialog }, 'Guest service (volunteer, no charge)') : null));
 }
 
-async function settle() {
-  if (S.busy || !S.cart.length || cartBlocked()) return;
+// Saves the order and prints. Returns true when saved. payment is 'cash' or 'card'.
+async function settle(payment) {
+  if (S.busy || !S.cart.length || cartBlocked()) return false;
+  const card = payment === 'card';
   const total = cartTotal();
   S.busy = true; renderCart();
   try {
@@ -276,18 +277,20 @@ async function settle() {
       client_ref: S.ref,
       lines: S.cart.map((l) => ({ item_id: l.item_id, qty: l.qty })),
       expected_total_cents: total,
-      cash_tendered_cents: S.tendered,
+      cash_tendered_cents: card ? null : S.tendered,
+      payment: card ? 'card' : 'cash',
       preorder_id: S.preorder ? S.preorder.id : undefined,
     });
     setOnline(true);
-    S.last = { order, change: S.tendered != null ? S.tendered - order.total_cents : null };
+    S.last = { order, change: !card && S.tendered != null ? S.tendered - order.total_cents : null };
     clearCart();
     S.busy = false;
     renderMenu(); renderCart();
-    await Printer.print(order, S.menu.settings, false);
+    Printer.print(order, S.menu.settings, false);
+    return true;
   } catch (e) {
     S.busy = false;
-    if (e.status === 401) return signedOut();
+    if (e.status === 401) { signedOut(); return false; }
     if (e.code === 'PREORDER_PAID' || e.code === 'PREORDER_NOT_FOUND') {
       clearCart();
       dialog('Do not take cash', h('p', { class: 'big-warn' }, e.message), []);
@@ -302,7 +305,59 @@ async function settle() {
       toast(e.message + ' Nothing was lost. Press the button again.', 'error');
     }
     renderMenu(); renderCart();
+    return false;
   }
+}
+
+// ---------- card payments (Clover on the cashier's iPhone) ----------
+// Clover is separate from this system. This box shows the amount to type into
+// Clover, and the order is only saved when the cashier confirms Clover said
+// Approved. If the card is declined, nothing is saved and the cart stays.
+async function cardDialog() {
+  if (S.busy || !S.cart.length || cartBlocked()) return;
+  // Check prices and stock before the customer is charged, not after.
+  const before = cartTotal();
+  S.menu.version = -1;
+  await loadMenu();
+  renderMenu(); renderCart();
+  if (cartBlocked()) return toast('An item just sold out. Remove it before charging the card.', 'error');
+  if (cartTotal() !== before) return toast(`Prices were updated. New total is ${money(cartTotal())}. Check it, then press Card again.`, 'error');
+
+  const charged = cartTotal();
+  const body = h('div', { class: 'card-pay' });
+  let busy = false;
+  let problem = null;
+  function paint() {
+    const count = cartCount();
+    put(body,
+      h('p', { class: 'muted' }, 'Type this amount in Clover on your iPhone and take the card:'),
+      h('div', { class: 'card-amount num' }, money(charged)),
+      h('p', { class: 'muted' }, `${count} ticket${count === 1 ? '' : 's'} will print after you confirm. No tip.`),
+      problem ? h('div', { class: 'pre-problem' }, problem) : null,
+      h('button', { class: 'settle card card-go', disabled: busy || !S.cart.length || cartBlocked(), onclick: approved },
+        busy ? 'Saving…' : `Clover says Approved · Print ${count} ticket${count === 1 ? '' : 's'}`),
+      h('p', { class: 'muted small card-foot' }, 'Card declined? Press Declined below. Nothing is saved and the order stays on screen.'));
+  }
+  let accepted = charged; // the total the cashier has agreed matches what Clover took
+  const soldOutMsg = () => `An item sold out while you were charging. The customer paid ${money(charged)} on Clover. Close this, remove the item, and give back its price in cash.`;
+  const priceMsg = (t) => `Prices changed while you were charging. The customer paid ${money(charged)} but the total is now ${money(t)}. ${t > charged ? `Charge the extra ${money(t - charged)} on Clover` : `Give back ${money(charged - t)} in cash`}, then press Approved again.`;
+  async function approved() {
+    if (busy) return;
+    // The menu can update while the card is being charged. Never save a total
+    // different from what Clover took without the cashier knowing.
+    if (cartBlocked()) { problem = soldOutMsg(); paint(); return; }
+    if (cartTotal() !== accepted) { accepted = cartTotal(); problem = priceMsg(accepted); paint(); return; }
+    busy = true; problem = null; paint();
+    const ok = await settle('card');
+    busy = false;
+    if (ok) { close(); toast('Card payment saved', 'ok'); return; }
+    if (!S.cashier || !S.cart.length) { close(); return; } // signed out, or the pre-order was already paid
+    if (cartBlocked()) problem = soldOutMsg();
+    else if (cartTotal() !== accepted) { accepted = cartTotal(); problem = priceMsg(accepted); }
+    paint();
+  }
+  const close = dialog('Card payment on Clover', body, [], { sticky: true, closeLabel: 'Declined / cancel' });
+  paint();
 }
 
 // ---------- phone pre-orders ----------
@@ -464,7 +519,7 @@ async function recentDialog() {
   dialog('Your recent orders', orders.length ? h('div', { class: 'recent' }, orders.map((o) =>
     h('div', { class: 'recent-row' + (o.voided_at ? ' void' : '') },
       h('div', {},
-        h('strong', { class: 'num' }, o.kind === 'guest' ? `#${o.id} · Guest service` : `#${o.id} · ${money(o.total_cents)}`), ' ',
+        h('strong', { class: 'num' }, o.kind === 'guest' ? `#${o.id} · Guest service` : `#${o.id} · ${money(o.total_cents)}${o.payment === 'card' ? ' · Card' : ''}`), ' ',
         o.preorder_code ? h('span', { class: 'pre-tag small num' }, `Pre-order ${o.preorder_code}`) : null, ' ', h('span', { class: 'muted' }, timeOf(o.created_at) + (o.voided_at ? ' · VOIDED' : '')),
         h('div', { class: 'muted' }, o.lines.map((l) => `${l.qty}× ${l.item_name}`).join(', ')),
         o.refunds.length ? h('div', { class: 'refund-note' }, `Refunded: ${o.refunds.map((r) => `${o.id}-${r.ticket_no} ${r.item_name}`).join(', ')}`) : null),

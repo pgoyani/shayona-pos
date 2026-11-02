@@ -90,6 +90,8 @@ async function main() {
     const ids = new Set();
     const orderInfo = new Map(); // order id -> price of each ticket, in ticket order
     const perCashier = Array(CASHIERS).fill(0);
+    const perCashierCard = Array(CASHIERS).fill(0); // part of perCashier paid by card on Clover
+    let cardTotal = 0;
     const guest = { orders: 0, tickets: 0, value: 0, perVol: [0, 0, 0], tickets_list: [] };
 
     async function sell(ci, n) {
@@ -116,7 +118,8 @@ async function main() {
         for (let attempt = 0; attempt < 5; attempt++) {
           const p = price();
           const total = lines.reduce((s, l) => s + p[l.item_id] * l.qty, 0);
-          const body = { client_ref: ref, lines, expected_total_cents: total, cash_tendered_cents: total + 500 };
+          const card = i % 3 === 1; // every third order is paid by card
+          const body = card ? { client_ref: ref, lines, expected_total_cents: total, payment: 'card' } : { client_ref: ref, lines, expected_total_cents: total, cash_tendered_cents: total + 500 };
           // one in five orders is sent twice at the same instant, like a double tap or a network retry
           const sends = i % 5 === 0 ? [call('POST', '/api/orders', body), call('POST', '/api/orders', body)] : [call('POST', '/api/orders', body)];
           const results = await Promise.all(sends);
@@ -130,6 +133,8 @@ async function main() {
             ids.add(o.id);
             orderInfo.set(o.id, o.lines.flatMap((l) => Array(l.qty).fill(l.unit_price_cents)));
             collected += total; accepted++; perCashier[ci] += total;
+            assert.equal(o.payment, card ? 'card' : 'cash');
+            if (card) { perCashierCard[ci] += total; cardTotal += total; assert.equal(o.cash_tendered_cents, null); }
             ticketCount += lines.reduce((s, l) => s + l.qty, 0);
             break;
           }
@@ -163,8 +168,14 @@ async function main() {
     assert.ok(rep.timeline.length <= 2, 'a few seconds of sales fall in one or two 15-minute buckets');
     for (let i = 0; i < CASHIERS; i++) {
       const row = rep.byCashier.find((r) => r.name === `Cashier ${i + 1}`);
-      assert.equal(row.sales_cents, perCashier[i], `cashier ${i + 1} drawer matches`);
+      assert.equal(row.sales_cents, perCashier[i], `cashier ${i + 1} sales match`);
+      assert.equal(row.card_cents, perCashierCard[i], `cashier ${i + 1} card total matches`);
+      assert.equal(row.cash_cents, perCashier[i] - perCashierCard[i], `cashier ${i + 1} drawer holds only cash`);
     }
+    assert.ok(cardTotal > 0, 'some orders were paid by card');
+    assert.equal(rep.totals.card_cents, cardTotal, 'card total matches');
+    assert.equal(rep.totals.cash_sales_cents, collected - cardTotal, 'cash total matches');
+    assert.equal(rep.byItem.reduce((s, r) => s + (r.card_cents || 0), 0), cardTotal, 'card sales by item add up');
     const sorted = [...ids].sort((a, b) => a - b);
     assert.equal(sorted[0], 100, 'order numbers start at 100');
     assert.equal(sorted[sorted.length - 1], 99 + accepted + guest.orders, 'order numbers are gap-free');
@@ -353,7 +364,7 @@ async function main() {
     assert.equal(rep2.timeline.reduce((s, r) => s + r.sales_cents, 0), rep2.totals.net_cents, 'timeline net adds up');
     for (let i = 0; i < CASHIERS; i++) {
       const row = rep2.byCashier.find((r) => r.name === `Cashier ${i + 1}`);
-      assert.equal(row.cash_cents, perCashier[i] - perCashierRefund[i], `cashier ${i + 1} drawer after refunds`);
+      assert.equal(row.cash_cents, perCashier[i] - perCashierCard[i] - perCashierRefund[i], `cashier ${i + 1} drawer after refunds (refunds are cash)`);
     }
     assert.equal(rep2.byCashier.find((r) => r.name === 'Admin').refunds_cents, adminT.price);
     const csv = await fetch(BASE + '/api/admin/export.csv', { headers: { Cookie: admin.cookie() } }).then((r) => r.text());
@@ -361,6 +372,19 @@ async function main() {
     const csvRefunded = csvRows.reduce((s, c) => s + (Number(c[12]) || 0), 0);
     assert.equal(csvRefunded, refunded.size, 'CSV lists every refunded ticket');
     assert.equal(csvRows.filter((c) => c[3] === 'guest service').reduce((s, c) => s + Number(c[7]), 0), guest.tickets, 'CSV marks guest service lines');
+    assert.equal(Math.round(csvRows.filter((c) => c[15] === 'card').reduce((s, c) => s + Number(c[9]) * 100, 0)), cardTotal, 'CSV marks card payments');
+
+    // an order rung up with the wrong button can be fixed: the money moves from card to the drawer
+    const cardOrder = (await admin('GET', '/api/admin/orders?kind=sale&payment=card&limit=1')).json.rows[0];
+    const cashierRow = (r) => r.byCashier.find((c) => c.cashier_id === cardOrder.cashier_id);
+    const beforeFix = cashierRow(rep2);
+    assert.equal((await admin('POST', `/api/admin/orders/${cardOrder.id}/payment`, { payment: 'cash' })).status, 200);
+    const fixed = cashierRow((await admin('GET', '/api/admin/report')).json);
+    assert.equal(fixed.cash_cents, beforeFix.cash_cents + cardOrder.total_cents, 'drawer gains the order');
+    assert.equal(fixed.card_cents, beforeFix.card_cents - cardOrder.total_cents, 'card total loses it');
+    await admin('POST', `/api/admin/orders/${cardOrder.id}/payment`, { payment: 'card' });
+    assert.equal((await admin('POST', `/api/admin/orders/${gl.rows[0].id}/payment`, { payment: 'card' })).status, 404, 'Guest service orders have no payment to change');
+    assert.equal((await cashiers[0]('POST', '/api/orders', { client_ref: crypto.randomUUID(), lines: [{ item_id: anyItem.id, qty: 1 }], expected_total_cents: anyItem.price_cents, payment: 'bitcoin' })).status, 400);
 
     // voiding a guest order changes the guest totals, never sales
     const gVoid = gl.rows[0];
@@ -395,6 +419,7 @@ async function main() {
     console.log(`      ${duplicates} duplicate submissions absorbed, ${priceRejects} stale-price orders rejected and re-rung`);
     console.log(`      ${refunded.size} tickets refunded ($${(refundedCents / 100).toFixed(2)}) in ${rSecs.toFixed(1)}s by 6 cashiers at once, ${refundConflicts} double-refund attempts refused`);
     console.log(`      ${pres.length} phone pre-orders from 30 phones at once in ${preSecs.toFixed(1)}s, all with their own code; ${prePaid} paid by 5 cashiers racing, ${doublePay} double payments refused`);
+    console.log(`      $${(cardTotal / 100).toFixed(2)} paid by card kept out of the cash drawers; refunds always come out of the drawer`);
     console.log(`      ${guest.orders} Guest service orders (${guest.tickets} free tickets) mixed in, logged per volunteer, kept out of sales and drawers`);
     console.log(`      net $${(rep2.totals.net_cents / 100).toFixed(2)} and every drawer reconcile to the cent\n`);
   } finally {

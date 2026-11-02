@@ -167,3 +167,7 @@ a.btn { text-decoration: none; }
 .qr-side { flex: 1; min-width: 240px; }
 .qr-side .input { width: 100%; }
 .qr-warn { color: #6b4a00; font-size: 13px; font-weight: 600; margin-top: 6px; }
+
+/* Card payments */
+.card-small { color: #1d4ed8; font-size: 12px; font-weight: 700; }
+.card-col { color: #1e3a8a; }
