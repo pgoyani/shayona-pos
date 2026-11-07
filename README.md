@@ -146,6 +146,25 @@ Reporting:
 Guest tickets can't be refunded for cash. An admin can void a guest order made
 by mistake.
 
+## Scanning QR codes (refunds and pre-orders)
+
+- **Tickets:** browser-printed tickets have a small QR code next to the
+  ticket code. Turn it off in **Admin > Settings**. Direct USB tickets don't
+  have one.
+- **Phone pre-orders:** the phone shows a QR code under the 4-digit code.
+
+Two ways to read the codes on the cashier screen:
+- **USB 2D scanner:** plug it in. Nothing to set up, as long as it sends
+  Enter after each scan, which most do. Scan anywhere on the cashier screen.
+  A ticket opens Refund with that ticket added, and more scans add more
+  tickets. A pre-order code loads the order. If the cart already has items,
+  it waits for the cashier to press Load.
+- **Laptop camera:** press **Scan QR**, or use the camera button inside
+  Refund and Pre-order. Chrome asks once to allow the camera. Inside Refund
+  the camera keeps scanning, so tickets can be held up one after another.
+
+Typing the codes still works the same way.
+
 ## Card payments (Clover)
 
 Clover runs separately on each cashier's iPhone. This system never talks to

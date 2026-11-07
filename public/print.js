@@ -55,6 +55,16 @@ const Printer = (() => {
     };
   }
 
+  // QR with the ticket code, for scanning refunds. "T:" marks it as a ticket.
+  // Only on browser-printed tickets. Turned off in Admin > Settings.
+  function ticketQr(code) {
+    if (typeof qrcode !== 'function') return null;
+    const qr = qrcode(0, 'M');
+    qr.addData('T:' + code, 'Alphanumeric');
+    qr.make();
+    return h('div', { class: 't-qr', innerHTML: qr.createSvgTag({ cellSize: 2, margin: 0, scalable: true }) });
+  }
+
   const stamp = (ms) => new Date(ms).toLocaleString([], { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
 
   // ----- browser printing -----
@@ -68,8 +78,9 @@ const Printer = (() => {
         h('div', { class: 't-stall' }, t.stall),
         h('div', { class: 't-item' }, t.item),
         settings.show_price_on_ticket === '1' && h('div', { class: 't-price' }, money(t.price_cents)),
-        h('div', { class: 't-code-label' }, 'TICKET'),
-        h('div', { class: 't-code' }, t.code),
+        h('div', { class: 't-code-row' },
+          h('div', {}, h('div', { class: 't-code-label' }, 'TICKET'), h('div', { class: 't-code' }, t.code)),
+          settings.ticket_qr !== '0' && order.id ? ticketQr(t.code) : null),
         reprint && h('div', { class: 't-reprint' }, 'REPRINT'),
         h('div', { class: 't-meta' }, `${t.n} of ${t.of} in this order`),
         h('div', { class: 't-meta' }, `${stamp(order.created_at)}  ·  ${order.cashier_name}`),

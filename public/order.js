@@ -141,6 +141,7 @@ function renderCode() {
       h('div', { class: 'code-card' + (paid ? ' paid' : dead ? ' dead' : '') },
         h('div', { class: 'code-label' }, paid ? 'Paid' : dead ? 'This code has expired' : 'Your order code'),
         h('div', { class: 'code num' }, p.code),
+        !paid && !dead && typeof qrcode === 'function' ? (() => { const qr = qrcode(0, 'M'); qr.addData('P:' + p.code, 'Alphanumeric'); qr.make(); return h('div', { class: 'code-qr', innerHTML: qr.createSvgTag({ cellSize: 4, margin: 2, scalable: true }) }); })() : null,
         paid ? h('div', { class: 'code-pay' }, `Order #${p.order_id}. Your tickets were printed at the cashier.`)
           : dead ? h('div', { class: 'code-pay' }, 'Please start a new order, or order at a cashier.')
             : h('div', { class: 'code-pay' }, 'Pay ', h('strong', { class: 'num' }, money(p.total_cents)), h('div', { class: 'code-how' }, 'Cash or card'))),

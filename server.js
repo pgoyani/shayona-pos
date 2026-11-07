@@ -429,6 +429,7 @@ admin.put('/settings', (req, res) => {
   const patch = {};
   if (b.event_name !== undefined) patch.event_name = text(b.event_name, 'Event name', 60);
   if (b.receipt_footer !== undefined) patch.receipt_footer = String(b.receipt_footer).trim().slice(0, 60);
+  if (b.ticket_qr !== undefined) patch.ticket_qr = b.ticket_qr ? '1' : '0';
   if (b.print_summary !== undefined) patch.print_summary = b.print_summary ? '1' : '0';
   if (b.refund_line !== undefined) patch.refund_line = String(b.refund_line).trim().slice(0, 80);
   if (b.paper_width !== undefined) { if (!['58', '80'].includes(String(b.paper_width))) throw bad('Paper width must be 58 or 80'); patch.paper_width = String(b.paper_width); }
@@ -485,6 +486,14 @@ admin.post('/reset-sales', (req, res) => {
 });
 
 // ---------- static pages ----------
+// Two small browser libraries: drawing QR codes, and reading them from the camera.
+const VENDOR = { 'qrcode.js': require.resolve('qrcode-generator'), 'jsqr.js': require.resolve('jsqr') };
+app.get('/vendor/:file', (req, res, next) => {
+  const f = VENDOR[req.params.file];
+  if (!f) return next();
+  res.setHeader('Cache-Control', 'public, max-age=86400');
+  res.type('application/javascript').sendFile(f);
+});
 app.use(express.static(path.join(__dirname, 'public'), {
   extensions: ['html'],
   setHeaders: (res) => res.setHeader('Cache-Control', 'no-cache'),

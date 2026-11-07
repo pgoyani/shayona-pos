@@ -151,6 +151,7 @@ const DEFAULT_SETTINGS = {
   preorders_enabled: '1',
   refund_line: 'Not used? Bring this ticket back for a refund.',
   print_summary: '1',
+  ticket_qr: '1',
 };
 const PREORDER_TTL = 3 * 3600 * 1000;   // an unpaid pre-order code lasts 3 hours
 const CLAIM_MS = 10 * 60 * 1000;        // a cashier's hold on a pre-order lasts 10 minutes

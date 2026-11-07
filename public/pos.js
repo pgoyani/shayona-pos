@@ -10,6 +10,7 @@ const S = {
   ref: null,           // unique reference for the cart being built (makes retries safe)
   tendered: null,      // cash received in cents, optional
   preorder: null,      // { id, code, total_cents } when the cart came from a phone pre-order
+  scanTarget: null,    // the open Refund or Pre-order box that scans go to
   busy: false,
   last: null,          // { order, change } of the order just settled
   online: true,
@@ -143,8 +144,9 @@ function renderPos() {
     h('header', { class: 'topbar' }),
     h('main', { class: 'menu-pane' },
       h('nav', { class: 'actions' },
-        h('button', { class: 'action pre', onclick: preorderDialog }, h('span', { class: 'action-icon' }, '📱'), 'Pre-order code'),
-        h('button', { class: 'action', onclick: refundDialog }, h('span', { class: 'action-icon' }, '↩'), 'Refund tickets')),
+        h('button', { class: 'action pre', onclick: () => preorderDialog() }, h('span', { class: 'action-icon' }, '📱'), 'Pre-order code'),
+        h('button', { class: 'action', onclick: () => refundDialog() }, h('span', { class: 'action-icon' }, '↩'), 'Refund tickets'),
+        h('button', { class: 'action', onclick: () => cameraDialog(false) }, h('span', { class: 'action-icon' }, '📷'), 'Scan QR')),
       h('div', { class: 'menu' })),
     h('aside', { class: 'cart' })));
   renderHeader(); renderMenu(); renderCart();
@@ -363,7 +365,7 @@ async function cardDialog() {
 // ---------- phone pre-orders ----------
 // The customer shows a 4-digit code from their phone. Typing it loads their
 // items into the normal cart; then it is a normal sale (or Guest service).
-function preorderDialog() {
+function preorderDialog(initialCode) {
   if (S.busy) return;
   const input = h('input', { class: 'input pre-input num', inputMode: 'numeric', maxLength: 5, placeholder: '4-digit code', autocomplete: 'off', 'aria-label': 'Pre-order code' });
   const out = h('div', { class: 'pre-out' });
@@ -410,12 +412,121 @@ function preorderDialog() {
     toast(missing.length ? `Pre-order ${p.code} loaded. ${missing.length} item(s) sold out since: remove them.` : `Pre-order ${p.code} loaded. Take ${money(cartTotal())}.`, missing.length ? 'error' : 'ok');
   }
 
+  const target = { kind: 'preorder', take(code) { input.value = code; if (!S.cart.length) look(false); else put(out, h('div', { class: 'pre-warn' }, 'Press Load to replace the items in the current order.')); } };
+  S.scanTarget = target;
   const close = dialog('Pre-order from a phone', h('form', { class: 'pre', onsubmit: (e) => { e.preventDefault(); look(false); } },
     h('p', { class: 'muted' }, 'Type the code on the customer’s phone. Their items load into the order so you can take the cash.'),
     S.cart.length ? h('p', { class: 'pre-warn' }, 'This replaces the items in the current order.') : null,
     h('div', { class: 'pre-row' }, input, h('button', { class: 'btn primary', type: 'submit' }, 'Load')),
-    out), [], { sticky: true });
+    h('button', { class: 'btn scan-inline', type: 'button', onclick: () => cameraDialog(false) }, '📷 Scan the phone with the camera'),
+    out), [], { sticky: true, onclose: () => { if (S.scanTarget === target) S.scanTarget = null; } });
+  if (initialCode) target.take(initialCode);
   setTimeout(() => input.focus(), 0);
+}
+
+// ---------- scanning QR codes ----------
+// Ticket QR codes hold "T:520-3", the phone pre-order screen holds "P:4821".
+// A USB scanner types the code fast and presses Enter; the laptop camera is
+// read with the browser's barcode reader, or the jsQR library where there is none.
+function handleScan(raw) {
+  const t = String(raw || '').trim().toUpperCase();
+  let m;
+  if ((m = /^T:(\d{1,9}-\d{1,4})$/.exec(t))) {
+    if (S.scanTarget && S.scanTarget.kind === 'refund') return S.scanTarget.take(m[1]);
+    if (S.scanTarget || document.querySelector('.overlay') || S.busy) return toast('Close the open box first, then scan the ticket again.', 'error');
+    return refundDialog(m[1]);
+  }
+  if ((m = /^P:(\d{4,5})$/.exec(t))) {
+    if (S.scanTarget && S.scanTarget.kind === 'preorder') return S.scanTarget.take(m[1]);
+    if (S.scanTarget || document.querySelector('.overlay') || S.busy) return toast('Close the open box first, then scan the code again.', 'error');
+    return preorderDialog(m[1]);
+  }
+  toast('That QR code is not a ticket or a pre-order code.', 'error');
+}
+
+// USB scanner: it types much faster than a person. A burst that starts with
+// T: or P: and ends with Enter is treated as a scan, wherever the cursor is.
+const scanKeys = { buf: '', start: 0, last: 0 };
+document.addEventListener('keydown', (e) => {
+  if (!S.cashier) return;
+  const now = performance.now();
+  if (e.key === 'Enter') {
+    const b = scanKeys.buf;
+    scanKeys.buf = '';
+    if (b.length >= 5 && /^[TP]:/i.test(b) && (now - scanKeys.start) / b.length < 40) {
+      e.preventDefault(); e.stopPropagation();
+      // The scan was typed into whatever box had the cursor: take it back out.
+      const el = document.activeElement;
+      if (el && typeof el.value === 'string' && el.value.toUpperCase().endsWith(b.toUpperCase())) {
+        el.value = el.value.slice(0, -b.length);
+        el.dispatchEvent(new Event('input', { bubbles: true }));
+      }
+      handleScan(b);
+    }
+    return;
+  }
+  if (e.key.length !== 1) return; // Shift and other keys don't break a scan
+  if (now - scanKeys.last > 80) { scanKeys.buf = ''; scanKeys.start = now; }
+  scanKeys.buf += e.key;
+  scanKeys.last = now;
+}, true);
+
+// Camera. continuous = keep scanning (several tickets for one refund).
+async function cameraDialog(continuous) {
+  if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) return toast('The camera is not available in this browser.', 'error');
+  const video = h('video', { class: 'cam-video', playsInline: true, muted: true, autoplay: true });
+  const msg = h('p', { class: 'cam-msg' }, 'Starting the camera…');
+  let stream = null; let stopped = false; let timer = null; let lastText = ''; let lastAt = 0;
+  const stop = () => { stopped = true; clearTimeout(timer); if (stream) stream.getTracks().forEach((tr) => tr.stop()); };
+  const close = dialog(continuous ? 'Scan tickets' : 'Scan a QR code', h('div', { class: 'cam' }, video, msg), [], { sticky: true, onclose: stop, closeLabel: continuous ? 'Done' : 'Close' });
+  try {
+    stream = await navigator.mediaDevices.getUserMedia({ video: { width: { ideal: 1280 }, height: { ideal: 720 } }, audio: false });
+  } catch (e) {
+    msg.textContent = e && e.name === 'NotAllowedError'
+      ? 'The camera is blocked. Click the camera icon in the address bar, allow it for this site, and try again.'
+      : 'No camera found on this computer.';
+    return;
+  }
+  if (stopped) return stop();
+  video.srcObject = stream;
+  await video.play().catch(() => {});
+  msg.textContent = continuous ? 'Hold each ticket QR up to the camera. It adds them one by one.' : 'Hold the ticket or the customer’s phone up to the camera.';
+  let detector = null;
+  try {
+    if ('BarcodeDetector' in window && (await BarcodeDetector.getSupportedFormats()).includes('qr_code')) detector = new BarcodeDetector({ formats: ['qr_code'] });
+  } catch (e) { detector = null; }
+  const canvas = document.createElement('canvas');
+  const ctx = canvas.getContext('2d', { willReadFrequently: true });
+  async function tick() {
+    if (stopped) return;
+    let text = null;
+    if (video.readyState >= 2 && video.videoWidth) {
+      try {
+        if (detector) {
+          const found = await detector.detect(video);
+          if (found.length) text = found[0].rawValue;
+        } else if (window.jsQR) {
+          const scale = Math.min(1, 720 / video.videoWidth);
+          canvas.width = Math.round(video.videoWidth * scale); canvas.height = Math.round(video.videoHeight * scale);
+          ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+          const found = window.jsQR(ctx.getImageData(0, 0, canvas.width, canvas.height).data, canvas.width, canvas.height, { inversionAttempts: 'dontInvert' });
+          if (found) text = found.data;
+        }
+      } catch (e) { /* try the next frame */ }
+    }
+    if (text) {
+      const t = text.trim().toUpperCase();
+      const now = Date.now();
+      if (t !== lastText || now - lastAt > 3000) { // ignore the same code held in view
+        lastText = t; lastAt = now;
+        if (!/^[TP]:/.test(t)) msg.textContent = 'That QR code is not a ticket or a pre-order code.';
+        else if (continuous && t.startsWith('T:')) { handleScan(t); msg.textContent = `Added ${t.slice(2)}. Hold up the next ticket, or press Done.`; }
+        else { close(); handleScan(t); return; }
+      }
+    }
+    timer = setTimeout(tick, 150);
+  }
+  tick();
 }
 
 // ---------- Guest service ----------
@@ -530,7 +641,7 @@ async function recentDialog() {
 // ---------- refunds ----------
 // The customer hands back unused tickets. The cashier types each ticket code
 // (e.g. 422-2), checks the list, gives the cash back and keeps the tickets.
-function refundDialog() {
+function refundDialog(initialCode) {
   const list = [];          // tickets looked up so far, in the order they were typed
   let ref = newRef();       // same reference on a retry, so a refund is never paid twice
   let busy = false;
@@ -596,7 +707,7 @@ function refundDialog() {
   }
 
   async function add() {
-    const code = input.value.trim();
+    const code = input.value.trim().replace(/^T:/i, ''); // a scanned ticket QR starts with T:
     if (!code) return;
     msg.textContent = '';
     try {
@@ -637,8 +748,20 @@ function refundDialog() {
     paint();
   }
 
+  // Scans while this box is open add tickets to it.
+  const target = {
+    kind: 'refund',
+    take(code) {
+      if (busy) return;
+      if (done) { done = null; list.length = 0; ref = newRef(); msg.textContent = ''; paint(); }
+      input.value = code; add();
+    },
+  };
+  S.scanTarget = target;
   paint();
-  dialog('Refund tickets', body, [], { sticky: true, wide: true });
+  body.insertBefore(h('button', { class: 'btn scan-inline', type: 'button', onclick: () => cameraDialog(true) }, '📷 Scan tickets with camera'), body.children[1]);
+  dialog('Refund tickets', body, [], { sticky: true, wide: true, onclose: () => { if (S.scanTarget === target) S.scanTarget = null; } });
+  if (initialCode) target.take(initialCode);
   setTimeout(() => input.focus(), 0);
 }
 
