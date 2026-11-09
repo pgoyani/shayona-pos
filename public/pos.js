@@ -444,31 +444,40 @@ function handleScan(raw) {
   toast('That QR code is not a ticket or a pre-order code.', 'error');
 }
 
-// USB scanner: it types much faster than a person. A burst that starts with
-// T: or P: and ends with Enter is treated as a scan, wherever the cursor is.
-const scanKeys = { buf: '', start: 0, last: 0 };
+// USB scanner: it types much faster than a person. A fast burst that holds
+// T:520-3 or P:4821 is treated as a scan, wherever the cursor is. The burst
+// ends at Enter, or when the typing stops, because some scanners end with a
+// character macOS shows as "g" instead of Enter. Anything else in the burst
+// (like that "g") is ignored.
+const SCAN_RE = /[TP]:\d{1,9}(?:-\d{1,4})?/i;
+const scanKeys = { buf: '', start: 0, last: 0, timer: null };
+function finishScan(e) {
+  clearTimeout(scanKeys.timer);
+  const b = scanKeys.buf;
+  const perKey = (scanKeys.last - scanKeys.start) / Math.max(1, b.length - 1);
+  scanKeys.buf = '';
+  const m = SCAN_RE.exec(b);
+  if (!m || m.index > 1 || b.length < 5 || perKey > 40) return false;
+  if (e) { e.preventDefault(); e.stopPropagation(); }
+  // The scan was typed into whatever box had the cursor: take it back out.
+  const el = document.activeElement;
+  if (el && typeof el.value === 'string' && el.value.toUpperCase().endsWith(b.toUpperCase())) {
+    el.value = el.value.slice(0, -b.length);
+    el.dispatchEvent(new Event('input', { bubbles: true }));
+  }
+  handleScan(m[0]);
+  return true;
+}
 document.addEventListener('keydown', (e) => {
   if (!S.cashier) return;
   const now = performance.now();
-  if (e.key === 'Enter') {
-    const b = scanKeys.buf;
-    scanKeys.buf = '';
-    if (b.length >= 5 && /^[TP]:/i.test(b) && (now - scanKeys.start) / b.length < 40) {
-      e.preventDefault(); e.stopPropagation();
-      // The scan was typed into whatever box had the cursor: take it back out.
-      const el = document.activeElement;
-      if (el && typeof el.value === 'string' && el.value.toUpperCase().endsWith(b.toUpperCase())) {
-        el.value = el.value.slice(0, -b.length);
-        el.dispatchEvent(new Event('input', { bubbles: true }));
-      }
-      handleScan(b);
-    }
-    return;
-  }
+  if (e.key === 'Enter') { if (scanKeys.buf) finishScan(e); return; }
   if (e.key.length !== 1) return; // Shift and other keys don't break a scan
   if (now - scanKeys.last > 80) { scanKeys.buf = ''; scanKeys.start = now; }
   scanKeys.buf += e.key;
   scanKeys.last = now;
+  clearTimeout(scanKeys.timer);
+  scanKeys.timer = setTimeout(() => { if (scanKeys.buf) finishScan(null); }, 150);
 }, true);
 
 // Camera. continuous = keep scanning (several tickets for one refund).
@@ -493,7 +502,10 @@ async function cameraDialog(continuous) {
   msg.textContent = continuous ? 'Hold each ticket QR up to the camera. It adds them one by one.' : 'Hold the ticket or the customer’s phone up to the camera.';
   let detector = null;
   try {
-    if ('BarcodeDetector' in window && (await BarcodeDetector.getSupportedFormats()).includes('qr_code')) detector = new BarcodeDetector({ formats: ['qr_code'] });
+    if ('BarcodeDetector' in window) {
+      const formats = (await BarcodeDetector.getSupportedFormats()).filter((f) => f === 'qr_code' || f === 'code_128');
+      if (formats.includes('qr_code')) detector = new BarcodeDetector({ formats }); // Chrome on Mac reads barcodes too
+    }
   } catch (e) { detector = null; }
   const canvas = document.createElement('canvas');
   const ctx = canvas.getContext('2d', { willReadFrequently: true });
@@ -792,6 +804,9 @@ function printerDialog() {
     } catch (e) { say(Printer.explain(), 'bad'); }
     refresh();
   };
+  const paperSelect = h('select', { class: 'input', onchange: (e) => { Printer.setPaper(e.target.value); refresh(); } },
+    [['', `Use the admin setting (${S.menu.settings.paper_width === '58' ? '58' : '80'} mm)`], ['80', '80 mm: 48 characters a line'], ['58', '58 mm: 32 characters a line']]
+      .map(([v, l]) => h('option', { value: v, selected: Printer.paper() === v }, l)));
   const cutSelect = h('select', { class: 'input', onchange: (e) => { Printer.setCut(e.target.value); refresh(); } },
     Object.entries(Printer.CUTS).map(([k, c]) => h('option', { value: k, selected: Printer.cut() === k }, c.label)));
   const copy = async () => {
@@ -804,6 +819,8 @@ function printerDialog() {
     radio('usb', 'Direct USB receipt printer (default)', Printer.usbSupported() ? 'Tickets go straight to the receipt printer with a cut after each one. No print dialog and no driver needed.' : 'Not available here. Needs Chrome or Edge, on the https site or localhost.'),
     radio('browser', 'Browser print dialog', 'Works with any printer set up on this Mac.'),
     status,
+    h('label', { class: 'field' }, 'Paper width on this computer', paperSelect),
+    h('p', { class: 'muted small' }, 'The test ticket ends with a line of dashes. If it wraps onto two lines or words break in the middle, choose 58 mm.'),
     h('details', { class: 'trouble' }, h('summary', {}, 'Troubleshooting'),
       h('label', { class: 'field' }, 'Cut command (direct USB only)', cutSelect),
       h('p', { class: 'muted' }, 'If something is not working, press Copy details and send the text to whoever is helping.'),

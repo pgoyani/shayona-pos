@@ -148,10 +148,16 @@ by mistake.
 
 ## Scanning QR codes (refunds and pre-orders)
 
-- **Tickets:** browser-printed tickets have a small QR code next to the
-  ticket code. Turn it off in **Admin > Settings**. Direct USB tickets don't
-  have one.
-- **Phone pre-orders:** the phone shows a QR code under the 4-digit code.
+- **Tickets:** every ticket carries the ticket code as a QR code or as a
+  barcode. Choose in **Admin > Settings > Code printed on each ticket**:
+  - **QR code:** for a 2D scanner or the laptop camera.
+  - **Barcode:** for 1D scanners, like the NADAMOO BUR3003.
+  - **None.**
+
+  **Print a test ticket** includes it, so you can check it scans.
+- **Phone pre-orders:** the phone shows a barcode and a QR code under the
+  4-digit code. Many 1D laser scanners can't read phone screens; if yours
+  can't, type the 4 digits.
 
 Two ways to read the codes on the cashier screen:
 - **USB 2D scanner:** plug it in. Nothing to set up, as long as it sends

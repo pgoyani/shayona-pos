@@ -55,6 +55,14 @@ const Printer = (() => {
     };
   }
 
+  // Which scan code tickets carry: 'qr', 'barcode' or 'off' (Admin > Settings).
+  const scanCode = (settings) => (settings.ticket_qr === '0' ? 'off' : settings.scan_code === 'barcode' ? 'barcode' : 'qr');
+  // Code 128 barcode for 1D scanners, same text as the QR.
+  function ticketBarcode(code) {
+    if (typeof Code128 === 'undefined') return null;
+    return h('div', { class: 't-barcode', innerHTML: Code128.svg('T:' + code, 40, 10) });
+  }
+
   // QR with the ticket code, for scanning refunds. "T:" marks it as a ticket.
   // Only on browser-printed tickets. Turned off in Admin > Settings.
   function ticketQr(code) {
@@ -80,7 +88,8 @@ const Printer = (() => {
         settings.show_price_on_ticket === '1' && h('div', { class: 't-price' }, money(t.price_cents)),
         h('div', { class: 't-code-row' },
           h('div', {}, h('div', { class: 't-code-label' }, 'TICKET'), h('div', { class: 't-code' }, t.code)),
-          settings.ticket_qr !== '0' && order.id ? ticketQr(t.code) : null),
+          scanCode(settings) === 'qr' ? ticketQr(t.code) : null),
+        scanCode(settings) === 'barcode' ? ticketBarcode(t.code) : null,
         reprint && h('div', { class: 't-reprint' }, 'REPRINT'),
         h('div', { class: 't-meta' }, `${t.n} of ${t.of} in this order`),
         h('div', { class: 't-meta' }, `${stamp(order.created_at)}  ·  ${order.cashier_name}`),
@@ -144,6 +153,48 @@ const Printer = (() => {
   const cut = () => (CUTS[localStorage.getItem(LS_CUT)] ? localStorage.getItem(LS_CUT) : 'feed');
   const setCut = (k) => localStorage.setItem(LS_CUT, k);
 
+  // QR as a raster picture (GS v 0). Every ESC/POS printer can print a
+  // picture, unlike the QR command, which varies by brand. The picture is only
+  // as wide as the QR and is centred by the printer (ESC a 1), so it stays in
+  // the middle whatever the real paper width is.
+  // A centred picture of width x height dots; dark(x, y) says which dots are black.
+  function raster(width, height, dark) {
+    const wBytes = Math.ceil(width / 8);
+    const out = [ESC, 0x61, 1, GS, 0x76, 0x30, 0, wBytes & 0xff, wBytes >> 8, height & 0xff, height >> 8];
+    for (let y = 0; y < height; y++) {
+      for (let xb = 0; xb < wBytes; xb++) {
+        let byte = 0;
+        for (let bit = 0; bit < 8; bit++) { const x = xb * 8 + bit; if (x < width && dark(x, y)) byte |= 0x80 >> bit; }
+        out.push(byte);
+      }
+    }
+    return out;
+  }
+  function qrRaster(text, cols) {
+    if (typeof qrcode !== 'function') return [];
+    const qr = qrcode(0, 'M');
+    qr.addData(text, 'Alphanumeric');
+    qr.make();
+    const n = qr.getModuleCount();
+    const scale = cols === 48 ? 6 : 5;                // dots per QR square: about 16mm (80mm paper) or 13mm (58mm)
+    const quiet = 1;                                  // thin white border, in squares; the paper around it is white too
+    const size = (n + quiet * 2) * scale;
+    return raster(size, size, (x, y) => {
+      const mx = Math.floor(x / scale) - quiet; const my = Math.floor(y / scale) - quiet;
+      return my >= 0 && my < n && mx >= 0 && mx < n && qr.isDark(my, mx);
+    });
+  }
+  // Code 128 barcode picture: 3 dots per bar (0.375 mm, easy for laser
+  // scanners), 10 mm tall, with white space either side for the scanner.
+  function barcodeRaster(text, cols) {
+    if (typeof Code128 === 'undefined') return [];
+    const bits = Code128.bits(text);
+    const scale = 3;
+    const quiet = cols === 48 ? 10 : 8;              // in bars; 58mm paper has room for 8
+    const width = (bits.length + quiet * 2) * scale;
+    return raster(width, 80, (x) => bits[Math.floor(x / scale) - quiet] === '1');
+  }
+
   function escpos(order, settings, reprint) {
     const cutter = CUTS[cut()];
     const cols = settings.paper_width === '58' ? 32 : 48;
@@ -153,24 +204,60 @@ const Printer = (() => {
     const invert = (on) => b.push(GS, 0x42, on ? 1 : 0);
     const line = (s) => { for (const ch of s) b.push(ch.charCodeAt(0)); b.push(LF); };
     const block = (s, width) => wrap(s, width).forEach(line);
+    // Item name as big as possible: one line if it fits, otherwise two lines
+    // split between words so both halves are about the same length
+    // ("Gulab Jamun" / "(2 pc)"). Never breaks inside a word.
+    const twoLines = (text, width) => {
+      const words = ascii(text).split(' ');
+      let best = null;
+      for (let k = 1; k < words.length; k++) {
+        const a = words.slice(0, k).join(' '); const z = words.slice(k).join(' ');
+        if (a.length <= width && z.length <= width && (!best || Math.max(a.length, z.length) < Math.max(best[0].length, best[1].length))) best = [a, z];
+      }
+      return best;
+    };
+    const itemName = (name) => {
+      const text = ascii(name);
+      for (const [w, ht] of [[3, 3], [2, 3]]) {
+        if (text.length <= Math.floor(cols / w)) { size(((w - 1) << 4) | (ht - 1)); line(text); return; }
+      }
+      for (const [w, ht] of [[3, 3], [2, 3], [2, 2]]) {
+        const pair = twoLines(text, Math.floor(cols / w));
+        if (pair) { size(((w - 1) << 4) | (ht - 1)); pair.forEach(line); return; }
+      }
+      size(0x11); block(name, Math.floor(cols / 2));
+    };
+    // Stall name in the black band: same balanced split when it needs two lines.
+    const stallBand = (name) => {
+      const width = Math.floor(cols / 2) - 2;
+      const lines = ascii(name).length <= width ? [ascii(name)] : (twoLines(name, width) || wrap(name, width));
+      lines.forEach((l) => line(' ' + l + ' '));
+    };
     b.push(ESC, 0x40);                                 // reset
     for (const t of ticketsFor(order)) {
       b.push(ESC, 0x61, 1);                            // center
       size(0x00); bold(false); block(settings.event_name, cols); b.push(LF);
-      size(0x11); bold(true); invert(true); wrap(t.stall, cols / 2 - 2).forEach((l) => line(' ' + l + ' ')); invert(false);
+      size(0x11); bold(true); invert(true); stallBand(t.stall); invert(false);
       b.push(LF);
       // Item name in extra-large letters so the stall can read it at arm's length.
       // 80mm: 3x wide and 3x tall (16 letters a line). 58mm: 2x wide, 3x tall.
-      if (cols === 48) { size(0x22); block(t.item, 16); } else { size(0x12); block(t.item, 16); }
+      itemName(t.item);
       if (settings.show_price_on_ticket === '1') { size(0x00); line(money(t.price_cents)); }
       size(0x00); bold(true); b.push(LF); line('TICKET');
-      size(0x11); invert(true); line(` ${t.code} `); invert(false);
-      size(0x00); bold(false); b.push(LF);
+      size(0x11); line(t.code);                        // big and bold, plain (no black box)
+      size(0x00); bold(false);
+      if (scanCode(settings) === 'qr') b.push(...qrRaster('T:' + t.code, cols));
+      if (scanCode(settings) === 'barcode') { b.push(LF); b.push(...barcodeRaster('T:' + t.code, cols)); }
+      b.push(LF);
       if (reprint) { bold(true); line('** REPRINT **'); bold(false); }
       line(`${t.n} of ${t.of} in this order`);
       block(`${stamp(order.created_at)}  -  ${order.cashier_name}`, cols);
       if (settings.refund_line) { b.push(LF); block(settings.refund_line, cols); }
       if (settings.receipt_footer) block(settings.receipt_footer, cols);
+      if (!order.id) {                                 // test print: show whether the paper width is right
+        b.push(LF); line('-'.repeat(cols));
+        block(`Paper width check (${cols === 48 ? '80' : '58'} mm): the dashes above should fill exactly one line. If they wrap onto two lines, choose 58 mm in the Printer box. If they cover only part of the paper, choose 80 mm.`, cols);
+      }
       b.push(ESC, 0x64, cutter.feed);                  // feed a few lines so the text clears the blade
       b.push(...cutter.bytes);                         // cut
     }
@@ -263,7 +350,7 @@ const Printer = (() => {
   }
   // For the test button: print over USB only, and report the real error instead of falling back.
   async function printUsbOnly(order, settings) {
-    try { return await printUsb(order, settings, false); } catch (e) { usbDevice = null; onChange(); throw e; }
+    try { return await printUsb(order, withPaper(settings), false); } catch (e) { usbDevice = null; onChange(); throw e; }
   }
 
   // Everything worth knowing when printing misbehaves, as text that can be copied into a message.
@@ -271,7 +358,7 @@ const Printer = (() => {
     const hex = (n) => '0x' + n.toString(16).padStart(4, '0');
     const out = ['Food Stall POS printer details', `Time: ${new Date().toString()}`, `Browser: ${navigator.userAgent}`,
       `Page: ${location.origin} (secure: ${window.isSecureContext ? 'yes' : 'no'})`, `USB support in this browser: ${usbSupported() ? 'yes' : 'no'}`,
-      `Print method: ${mode()}`, `Cut command: ${cut()}`, `Paper width: ${settings ? settings.paper_width : '?'} mm`, `Connected now: ${usbStatus() || 'none'}`];
+      `Print method: ${mode()}`, `Cut command: ${cut()}`, `Paper width: ${settings ? withPaper(settings).paper_width : '?'} mm${paper() ? ' (set on this computer)' : ' (admin setting)'}`, `Connected now: ${usbStatus() || 'none'}`];
     if (usbSupported()) {
       const devices = await navigator.usb.getDevices().catch(() => []);
       out.push(`Approved USB devices: ${devices.length}`);
@@ -289,8 +376,16 @@ const Printer = (() => {
     return out.join('\n');
   }
 
+  // Paper width can be set per computer, because counters can have different
+  // printers. Empty means use the admin setting.
+  const LS_PAPER = 'pos_paper';
+  const paper = () => { try { return localStorage.getItem(LS_PAPER) || ''; } catch (e) { return ''; } };
+  const setPaper = (v) => { try { v ? localStorage.setItem(LS_PAPER, v) : localStorage.removeItem(LS_PAPER); } catch (e) { /* private mode */ } };
+  const withPaper = (settings) => (paper() ? { ...settings, paper_width: paper() } : settings);
+
   // Returns the mode that actually printed.
-  async function print(order, settings, reprint) {
+  async function print(order, settingsIn, reprint) {
+    const settings = withPaper(settingsIn);
     if (mode() === 'usb') {
       try { await printUsb(order, settings, reprint); return 'usb'; } catch (e) {
         usbDevice = null;
@@ -312,5 +407,5 @@ const Printer = (() => {
   // Open an already-approved printer without asking. Resolves true when one is ready.
   const autoConnect = () => (mode() === 'usb' ? ensureUsb().then(() => true, () => false).then((ok) => { onChange(); return ok; }) : Promise.resolve(false));
 
-  return { print, printUsbOnly, mode, setMode, connectUsb, ensureUsb, autoConnect, usbStatus, ticketsFor, usbSupported, explain, diagnostics, cut, setCut, CUTS, onChange: (fn) => { onChange = fn; }, _escpos: escpos };
+  return { print, printUsbOnly, mode, setMode, connectUsb, ensureUsb, autoConnect, usbStatus, ticketsFor, usbSupported, explain, diagnostics, cut, setCut, CUTS, paper, setPaper, onChange: (fn) => { onChange = fn; }, _escpos: escpos };
 })();

@@ -430,6 +430,11 @@ admin.put('/settings', (req, res) => {
   if (b.event_name !== undefined) patch.event_name = text(b.event_name, 'Event name', 60);
   if (b.receipt_footer !== undefined) patch.receipt_footer = String(b.receipt_footer).trim().slice(0, 60);
   if (b.ticket_qr !== undefined) patch.ticket_qr = b.ticket_qr ? '1' : '0';
+  if (b.scan_code !== undefined) {
+    if (!['qr', 'barcode', 'off'].includes(b.scan_code)) throw bad('Scan code must be qr, barcode or off');
+    patch.scan_code = b.scan_code;
+    patch.ticket_qr = b.scan_code === 'off' ? '0' : '1';
+  }
   if (b.print_summary !== undefined) patch.print_summary = b.print_summary ? '1' : '0';
   if (b.refund_line !== undefined) patch.refund_line = String(b.refund_line).trim().slice(0, 80);
   if (b.paper_width !== undefined) { if (!['58', '80'].includes(String(b.paper_width))) throw bad('Paper width must be 58 or 80'); patch.paper_width = String(b.paper_width); }

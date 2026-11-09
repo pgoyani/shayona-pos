@@ -141,14 +141,14 @@ function renderCode() {
       h('div', { class: 'code-card' + (paid ? ' paid' : dead ? ' dead' : '') },
         h('div', { class: 'code-label' }, paid ? 'Paid' : dead ? 'This code has expired' : 'Your order code'),
         h('div', { class: 'code num' }, p.code),
-        !paid && !dead && typeof qrcode === 'function' ? (() => { const qr = qrcode(0, 'M'); qr.addData('P:' + p.code, 'Alphanumeric'); qr.make(); return h('div', { class: 'code-qr', innerHTML: qr.createSvgTag({ cellSize: 4, margin: 2, scalable: true }) }); })() : null,
+        !paid && !dead && typeof Code128 !== 'undefined' ? h('div', { class: 'code-bar', innerHTML: Code128.svg('P:' + p.code, 40, 10) }) : null,
         paid ? h('div', { class: 'code-pay' }, `Order #${p.order_id}. Your tickets were printed at the cashier.`)
           : dead ? h('div', { class: 'code-pay' }, 'Please start a new order, or order at a cashier.')
             : h('div', { class: 'code-pay' }, 'Pay ', h('strong', { class: 'num' }, money(p.total_cents)), h('div', { class: 'code-how' }, 'Cash or card'))),
       paid ? null : h('div', { class: 'lines small-lines' }, p.lines.map((l) => h('div', { class: 'line' },
         h('div', { class: 'row-info' }, h('div', { class: 'row-name' }, `${l.qty}× ${l.name}`), h('div', { class: 'row-price' }, l.stall_name)),
         h('div', { class: 'line-total num' }, money(l.price_cents * l.qty))))),
-      !paid && !dead ? h('p', { class: 'note' }, 'Keep this screen open or take a screenshot. Prices are checked again at the cashier.') : null,
+      !paid && !dead ? h('p', { class: 'note' }, 'Keep this screen open or take a screenshot. Visit any cashier to get your tickets printed.') : null,
       h('button', { class: paid || dead ? 'submit' : 'again', onclick: startOver }, 'Start a new order')));
 }
 
