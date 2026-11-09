@@ -169,7 +169,7 @@
 .w58 .t-item { font-size: 22pt; }
 .t-refund { font-size: 8.5pt; font-weight: 400; margin-top: 1.5mm; }
 .w58 .t-stall { font-size: 11pt; }
-.t-price { font-size: 11pt; font-weight: 700; margin-bottom: 1mm; }
+.t-price { font-size: 13pt; font-weight: 800; margin: 2.5mm 0 1mm; }
 .t-code-label { font-size: 7.5pt; font-weight: 700; letter-spacing: .12em; margin-top: .5mm; }
 .t-code { display: inline-block; border: 2px solid #000; padding: .8mm 4mm 1mm; margin: .8mm 0 1.6mm; font-size: 22pt; font-weight: 800; letter-spacing: .06em; line-height: 1.1; }
 .w58 .t-code { font-size: 18pt; padding: .8mm 2.5mm 1mm; letter-spacing: .03em; }

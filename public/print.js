@@ -73,7 +73,8 @@ const Printer = (() => {
     return h('div', { class: 't-qr', innerHTML: qr.createSvgTag({ cellSize: 2, margin: 0, scalable: true }) });
   }
 
-  const stamp = (ms) => new Date(ms).toLocaleString([], { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
+  // Same date format on every computer, whatever its region or 24-hour setting: "Nov 8, 10:00 PM".
+  const stamp = (ms) => new Date(ms).toLocaleString('en-US', { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit', hour12: true });
 
   // ----- browser printing -----
   function printBrowser(order, settings, reprint) {
@@ -242,7 +243,10 @@ const Printer = (() => {
       // Item name in extra-large letters so the stall can read it at arm's length.
       // 80mm: 3x wide and 3x tall (16 letters a line). 58mm: 2x wide, 3x tall.
       itemName(t.item);
-      if (settings.show_price_on_ticket === '1') { size(0x00); line(money(t.price_cents)); }
+      if (settings.show_price_on_ticket === '1') {
+        b.push(ESC, 0x4a, 20);                         // small gap (about 2.5mm) under the big item name
+        size(0x01); bold(true); line(money(t.price_cents)); bold(false);  // double height, bold
+      }
       size(0x00); bold(true); b.push(LF); line('TICKET');
       size(0x11); line(t.code);                        // big and bold, plain (no black box)
       size(0x00); bold(false);
