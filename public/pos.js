@@ -809,6 +809,8 @@ function printerDialog() {
       .map(([v, l]) => h('option', { value: v, selected: Printer.paper() === v }, l)));
   const cutSelect = h('select', { class: 'input', onchange: (e) => { Printer.setCut(e.target.value); refresh(); } },
     Object.entries(Printer.CUTS).map(([k, c]) => h('option', { value: k, selected: Printer.cut() === k }, c.label)));
+  const spaceSelect = h('select', { class: 'input', onchange: (e) => { Printer.setSpace(e.target.value); refresh(); } },
+    Printer.SPACES.map(([v, l]) => h('option', { value: v, selected: Printer.space() === v }, l)));
   const copy = async () => {
     await refresh();
     try { await navigator.clipboard.writeText(details.textContent); toast('Details copied', 'ok'); } catch (e) { toast('Select the text and copy it by hand', 'error'); }
@@ -822,6 +824,8 @@ function printerDialog() {
     h('label', { class: 'field' }, 'Paper width on this computer', paperSelect),
     h('p', { class: 'muted small' }, 'The test ticket ends with a line of dashes. If it wraps onto two lines or words break in the middle, choose 58 mm.'),
     h('details', { class: 'trouble' }, h('summary', {}, 'Troubleshooting'),
+      h('label', { class: 'field' }, 'Blank space at the end of each ticket (direct USB only)', spaceSelect),
+      h('p', { class: 'muted' }, 'Automatic leaves about 2 mm under the last line. If the last line gets cut through, or ends up at the top of the next ticket, choose more space.'),
       h('label', { class: 'field' }, 'Cut command (direct USB only)', cutSelect),
       h('p', { class: 'muted' }, 'If something is not working, press Copy details and send the text to whoever is helping.'),
       details,

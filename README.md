@@ -89,6 +89,7 @@ prints two test tickets and the box under the options says what happened.
 | "Chrome was refused access" | macOS is holding the printer. Remove it from System Settings > Printers & Scanners, unplug, plug back in, connect again. |
 | Test says sent, nothing prints | Paper in backwards (thermal side must face the print head), cover not closed, or the wrong device was picked. |
 | Tickets print but come out as one strip | Open **Troubleshooting** and try the next **Cut command**, then test again. |
+| The last line is cut through, or shows up at the top of the next ticket | Open **Troubleshooting** and set **Blank space at the end of each ticket** to 5 mm or more. |
 | Text prints as random symbols | The printer is not in ESC/POS mode. Switch that Mac to **Browser print dialog** and install the maker's driver. |
 | Nothing above helps | Switch that Mac to **Browser print dialog**. Then press **Copy details** under Troubleshooting and send the text to whoever is helping. |
 

@@ -151,6 +151,7 @@ const DEFAULT_SETTINGS = {
   preorders_enabled: '1',
   refund_line: 'Not used? Bring this ticket back for a refund.',
   print_summary: '1',
+  print_stall: '1',   // stall name on each ticket (Admin > Settings)
   ticket_qr: '1',
   scan_code: 'qr',    // what tickets carry for scanning: qr | barcode | off
 };

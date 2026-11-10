@@ -599,12 +599,13 @@ function renderSettings() {
   const paper = h('select', { class: 'input' }, h('option', { value: '80', selected: s.paper_width === '80' }, '80 mm (standard)'), h('option', { value: '58', selected: s.paper_width === '58' }, '58 mm (narrow)'));
   const showPrice = h('input', { type: 'checkbox', checked: s.show_price_on_ticket === '1' });
   const printSummary = h('input', { type: 'checkbox', checked: s.print_summary !== '0' });
+  const printStall = h('input', { type: 'checkbox', checked: s.print_stall !== '0' });
   const curScan = s.ticket_qr === '0' ? 'off' : (s.scan_code === 'barcode' ? 'barcode' : 'qr');
   const scanCode = h('select', { class: 'input' }, [['qr', 'QR code (2D scanner or laptop camera)'], ['barcode', 'Barcode (1D scanner, like the NADAMOO BUR3003)'], ['off', 'None']]
     .map(([v, l]) => h('option', { value: v, selected: curScan === v }, l)));
   const save = guard(async (e) => {
     e.preventDefault();
-    A.catalog.settings = await call('PUT', '/api/admin/settings', { event_name: eventName.value, receipt_footer: footer.value, refund_line: refundLine.value, paper_width: paper.value, show_price_on_ticket: showPrice.checked, print_summary: printSummary.checked, scan_code: scanCode.value });
+    A.catalog.settings = await call('PUT', '/api/admin/settings', { event_name: eventName.value, receipt_footer: footer.value, refund_line: refundLine.value, paper_width: paper.value, show_price_on_ticket: showPrice.checked, print_summary: printSummary.checked, print_stall: printStall.checked, scan_code: scanCode.value });
     toast('Settings saved', 'ok'); renderShell();
   });
   const confirmBox = h('input', { class: 'input', placeholder: 'Type RESET', style: { width: '140px' } });
@@ -617,6 +618,7 @@ function renderSettings() {
         h('label', { class: 'field' }, 'Ticket footer line', footer),
         h('label', { class: 'field' }, 'Receipt paper width', paper),
         h('label', { class: 'check' }, showPrice, 'Print the price on each ticket'),
+        h('label', { class: 'check' }, printStall, 'Print the stall name on each ticket'),
         h('label', { class: 'check' }, printSummary, 'Print an order summary slip after the tickets'),
         h('label', { class: 'field' }, 'Code printed on each ticket, for scanning refunds', scanCode),
         h('div', {}, h('button', { class: 'btn primary' }, 'Save settings')))),

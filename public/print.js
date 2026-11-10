@@ -84,7 +84,7 @@ const Printer = (() => {
     put(root, ...ticketsFor(order).map((t) =>
       h('div', { class: 'ticket' },
         h('div', { class: 't-event' }, settings.event_name),
-        h('div', { class: 't-stall' }, t.stall),
+        settings.print_stall !== '0' && h('div', { class: 't-stall' }, t.stall),
         h('div', { class: 't-item' }, t.item),
         settings.show_price_on_ticket === '1' && h('div', { class: 't-price' }, money(t.price_cents)),
         h('div', { class: 't-code-row' },
@@ -143,16 +143,34 @@ const Printer = (() => {
   }
   // Ways to tell the cutter to cut. Printers of this kind nearly all accept the
   // first one; the others are there in case a model does not.
+  // feed = blank paper (in dots, 8 dots = 1 mm) under the last line before the cut.
+  // The standard command moves the last line up to the blade by itself, so it
+  // only needs a small margin. The others cut wherever the paper is, so the
+  // last line first has to travel from the print head up to the blade (about 1.5 cm).
   const LS_CUT = 'pos_cut';
   const CUTS = {
-    feed: { label: 'Standard (feed and cut)', bytes: [GS, 0x56, 0x42, 0x00], feed: 4 },
-    partial: { label: 'Partial cut', bytes: [GS, 0x56, 0x01], feed: 6 },
-    full: { label: 'Full cut', bytes: [GS, 0x56, 0x00], feed: 6 },
-    legacy: { label: 'Older command set', bytes: [ESC, 0x69], feed: 6 },
-    none: { label: 'No cut (tear by hand)', bytes: [], feed: 6 },
+    feed: { label: 'Standard (feed and cut)', bytes: [GS, 0x56, 0x42, 0x00], feed: 16 },
+    partial: { label: 'Partial cut', bytes: [GS, 0x56, 0x01], feed: 160 },
+    full: { label: 'Full cut', bytes: [GS, 0x56, 0x00], feed: 160 },
+    legacy: { label: 'Older command set', bytes: [ESC, 0x69], feed: 160 },
+    none: { label: 'No cut (tear by hand)', bytes: [], feed: 160 },
   };
-  const cut = () => (CUTS[localStorage.getItem(LS_CUT)] ? localStorage.getItem(LS_CUT) : 'feed');
-  const setCut = (k) => localStorage.setItem(LS_CUT, k);
+  const cut = () => { try { const k = localStorage.getItem(LS_CUT); return CUTS[k] ? k : 'feed'; } catch (e) { return 'feed'; } };
+  const setCut = (k) => { try { localStorage.setItem(LS_CUT, k); } catch (e) { /* private mode */ } };
+  // Blank space at the end of each ticket, per computer. '' = automatic (the cut
+  // command's own amount); otherwise millimetres.
+  const LS_SPACE = 'pos_space';
+  const SPACES = [['', 'Automatic'], ['0', 'None'], ['5', '5 mm'], ['10', '1 cm'], ['20', '2 cm']];
+  const space = () => { try { const v = localStorage.getItem(LS_SPACE) || ''; return SPACES.some(([k]) => k === v) ? v : ''; } catch (e) { return ''; } };
+  const setSpace = (v) => { try { v ? localStorage.setItem(LS_SPACE, v) : localStorage.removeItem(LS_SPACE); } catch (e) { /* private mode */ } };
+  // Bytes that end a ticket: feed the blank space, then cut. ESC J feeds by dots
+  // (at most 255 at a time) without printing a line.
+  function endTicket(b) {
+    const c = CUTS[cut()];
+    let dots = space() === '' ? c.feed : Number(space()) * 8;
+    while (dots > 0) { const n = Math.min(dots, 255); b.push(ESC, 0x4a, n); dots -= n; }
+    b.push(...c.bytes);
+  }
 
   // QR as a raster picture (GS v 0). Every ESC/POS printer can print a
   // picture, unlike the QR command, which varies by brand. The picture is only
@@ -197,7 +215,6 @@ const Printer = (() => {
   }
 
   function escpos(order, settings, reprint) {
-    const cutter = CUTS[cut()];
     const cols = settings.paper_width === '58' ? 32 : 48;
     const b = [];
     const size = (n) => b.push(GS, 0x21, n);           // 0x00 normal, 0x11 double width+height
@@ -238,10 +255,12 @@ const Printer = (() => {
     for (const t of ticketsFor(order)) {
       b.push(ESC, 0x61, 1);                            // center
       size(0x00); bold(false); block(settings.event_name, cols); b.push(LF);
-      size(0x11); bold(true); invert(true); stallBand(t.stall); invert(false);
-      b.push(LF);
-      // Item name in extra-large letters so the stall can read it at arm's length.
-      // 80mm: 3x wide and 3x tall (16 letters a line). 58mm: 2x wide, 3x tall.
+      if (settings.print_stall !== '0') {            // stall name in a black band (Admin > Settings can turn it off)
+        size(0x11); bold(true); invert(true); stallBand(t.stall); invert(false);
+        b.push(LF);
+      }
+      // Item name in extra-large bold letters so the stall can read it at arm's length.
+      bold(true);
       itemName(t.item);
       if (settings.show_price_on_ticket === '1') {
         b.push(ESC, 0x4a, 20);                         // small gap (about 2.5mm) under the big item name
@@ -262,8 +281,7 @@ const Printer = (() => {
         b.push(LF); line('-'.repeat(cols));
         block(`Paper width check (${cols === 48 ? '80' : '58'} mm): the dashes above should fill exactly one line. If they wrap onto two lines, choose 58 mm in the Printer box. If they cover only part of the paper, choose 80 mm.`, cols);
       }
-      b.push(ESC, 0x64, cutter.feed);                  // feed a few lines so the text clears the blade
-      b.push(...cutter.bytes);                         // cut
+      endTicket(b);                                    // small margin, then cut
     }
     if (wantsSummary(order, settings)) {
       const s = summaryOf(order);
@@ -285,8 +303,7 @@ const Printer = (() => {
       if (s.refunded) line(ascii(s.refunded));
       b.push(ESC, 0x61, 1);
       if (settings.receipt_footer) { b.push(LF); block(settings.receipt_footer, cols); }
-      b.push(ESC, 0x64, cutter.feed);
-      b.push(...cutter.bytes);
+      endTicket(b);
     }
     return new Uint8Array(b);
   }
@@ -362,7 +379,7 @@ const Printer = (() => {
     const hex = (n) => '0x' + n.toString(16).padStart(4, '0');
     const out = ['Food Stall POS printer details', `Time: ${new Date().toString()}`, `Browser: ${navigator.userAgent}`,
       `Page: ${location.origin} (secure: ${window.isSecureContext ? 'yes' : 'no'})`, `USB support in this browser: ${usbSupported() ? 'yes' : 'no'}`,
-      `Print method: ${mode()}`, `Cut command: ${cut()}`, `Paper width: ${settings ? withPaper(settings).paper_width : '?'} mm${paper() ? ' (set on this computer)' : ' (admin setting)'}`, `Connected now: ${usbStatus() || 'none'}`];
+      `Print method: ${mode()}`, `Cut command: ${cut()}`, `Space at end: ${space() === '' ? 'automatic' : space() + ' mm'}`, `Paper width: ${settings ? withPaper(settings).paper_width : '?'} mm${paper() ? ' (set on this computer)' : ' (admin setting)'}`, `Connected now: ${usbStatus() || 'none'}`];
     if (usbSupported()) {
       const devices = await navigator.usb.getDevices().catch(() => []);
       out.push(`Approved USB devices: ${devices.length}`);
@@ -411,5 +428,5 @@ const Printer = (() => {
   // Open an already-approved printer without asking. Resolves true when one is ready.
   const autoConnect = () => (mode() === 'usb' ? ensureUsb().then(() => true, () => false).then((ok) => { onChange(); return ok; }) : Promise.resolve(false));
 
-  return { print, printUsbOnly, mode, setMode, connectUsb, ensureUsb, autoConnect, usbStatus, ticketsFor, usbSupported, explain, diagnostics, cut, setCut, CUTS, paper, setPaper, onChange: (fn) => { onChange = fn; }, _escpos: escpos };
+  return { print, printUsbOnly, mode, setMode, connectUsb, ensureUsb, autoConnect, usbStatus, ticketsFor, usbSupported, explain, diagnostics, cut, setCut, CUTS, space, setSpace, SPACES, paper, setPaper, onChange: (fn) => { onChange = fn; }, _escpos: escpos };
 })();
