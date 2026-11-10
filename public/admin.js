@@ -653,19 +653,49 @@ function phoneOrderingCard() {
     const w = window.open('', '_blank');
     if (!w) return toast('Allow pop-ups to print the poster', 'error');
     const esc = (t) => String(t).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
-    w.document.write(`<!doctype html><html><head><meta charset="utf-8"><title>Order poster</title><style>
-      @page { size: letter; margin: 0.6in; }
-      body { font-family: -apple-system, "Segoe UI", Roboto, Arial, sans-serif; color: #111; text-align: center; margin: 0; }
-      h1 { font-size: 40px; margin: 10px 0 4px; } .event { font-size: 20px; color: #444; }
-      img { width: 4.6in; height: 4.6in; margin: 26px auto 18px; display: block; image-rendering: pixelated; }
-      ol { text-align: left; display: inline-block; font-size: 22px; line-height: 1.6; margin: 0; padding-left: 1.2em; }
-      .url { margin-top: 22px; font-size: 16px; color: #444; word-break: break-all; }
-    </style></head><body>
+    const shown = u.replace(/^https?:\/\//, '').replace(/\/$/, '');
+    // Letter page with no margins, so Chrome prints no date or address in the corners.
+    w.document.write(`<!doctype html><html><head><meta charset="utf-8"><title>Pre-order poster</title><style>
+      @page { size: letter; margin: 0; }
+      * { box-sizing: border-box; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+      html, body { margin: 0; background: #fff; }
+      body { font-family: -apple-system, "Segoe UI", Inter, Roboto, Arial, sans-serif; color: #2a1a12; }
+      .page { width: 8.5in; height: 11in; padding: 0.4in; }
+      .frame { height: 100%; border: 3px solid #7c2507; border-radius: 22px; box-shadow: inset 0 0 0 7px #fff, inset 0 0 0 8.5px #d99a1c;
+        display: flex; flex-direction: column; align-items: center; text-align: center; padding: 0.38in 0.5in 0.4in; }
+      .diya { width: 1.05in; height: auto; display: block; }
+      .event { margin-top: 10px; font-size: 17px; font-weight: 700; letter-spacing: .16em; text-transform: uppercase; color: #9a6a0c; }
+      h1 { margin: 6px 0 0; font-size: 54px; line-height: 1.05; font-weight: 800; letter-spacing: -0.5px; color: #7c2507; }
+      .lead { margin: 10px 0 0; font-size: 21px; color: #5c4a3e; }
+      .qr { margin: 0.28in 0 0; padding: 0.16in; border: 3px solid #d99a1c; border-radius: 20px; background: #fff; }
+      .qr img { width: 4.2in; height: 4.2in; display: block; image-rendering: pixelated; }
+      .steps { list-style: none; margin: 0.32in 0 0; padding: 0; width: 100%; display: grid; grid-template-columns: repeat(3, 1fr); gap: 0.22in; }
+      .steps li { display: flex; flex-direction: column; align-items: center; }
+      .n { width: 40px; height: 40px; border-radius: 50%; background: #a3320b; color: #fff; font-size: 21px; font-weight: 800; line-height: 40px; }
+      .steps b { margin-top: 8px; font-size: 21px; color: #7c2507; }
+      .steps span.t { margin-top: 3px; font-size: 17.5px; line-height: 1.35; color: #3d2c22; text-wrap: balance; }
+      .url { margin-top: auto; padding-top: 0.2in; font-size: 16px; color: #5c4a3e; }
+      .url b { color: #2a1a12; word-break: break-all; }
+    </style></head><body><div class="page"><div class="frame">
+      <svg class="diya" viewBox="0 0 120 84" aria-hidden="true">
+        <rect x="58.5" y="40" width="3" height="9" rx="1.5" fill="#5a1d06"/>
+        <path d="M60 6 C71 21 74 33 60 44 C46 33 49 21 60 6 Z" fill="#e8730c"/>
+        <path d="M60 19 C66 28 67 36 60 42 C53 36 54 28 60 19 Z" fill="#f6c343"/>
+        <path d="M8 44 C30 50 90 50 112 44 C106 70 86 78 60 78 C34 78 14 70 8 44 Z" fill="#a3320b"/>
+        <path d="M14 48 C34 53 86 53 106 48" fill="none" stroke="#f6c343" stroke-width="2.5" stroke-linecap="round"/>
+        <circle cx="40" cy="62" r="3" fill="#f6c343"/><circle cx="60" cy="65" r="3" fill="#f6c343"/><circle cx="80" cy="62" r="3" fill="#f6c343"/>
+      </svg>
       <div class="event">${esc(s.event_name)}</div>
-      <h1>Order from your phone</h1>
-      <img src="${esc('/api/admin/qr.svg?url=' + encodeURIComponent(u))}" alt="">
-      <ol><li>Scan this code with your phone camera</li><li>Pick your food and press Submit</li><li>Show your 4-digit code at any cashier and pay</li></ol>
-      <div class="url">${esc(u)}</div>
+      <h1>Scan to pre-order food</h1>
+      <p class="lead">Order on your phone, then pay at any cashier.</p>
+      <div class="qr"><img src="${esc('/api/admin/qr.svg?url=' + encodeURIComponent(u))}" alt=""></div>
+      <ol class="steps">
+        <li><span class="n">1</span><b>Scan</b><span class="t">Point your phone camera at the code</span></li>
+        <li><span class="n">2</span><b>Order</b><span class="t">Pick your food and press Submit</span></li>
+        <li><span class="n">3</span><b>Pay</b><span class="t">Show your code at any cashier and pay by cash or card</span></li>
+      </ol>
+      <div class="url">No camera? Go to <b>${esc(shown)}</b></div>
+    </div></div>
       <script>document.querySelector('img').onload = () => setTimeout(() => print(), 200);<\/script>
     </body></html>`);
     w.document.close();

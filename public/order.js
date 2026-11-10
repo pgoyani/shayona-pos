@@ -99,6 +99,8 @@ function renderMenu() {
   }
   if (!O.menu.stalls.length) return put(app, header(''), h('div', { class: 'closed' }, h('h2', {}, 'Nothing on the menu yet'), h('p', {}, 'Please check back in a few minutes.')));
   const count = cartCount();
+  const bump = count > (O.barCount || 0); // the button gives a little hop when food is added
+  O.barCount = count;
   put(app,
     header('Order here, then pay at any cashier'),
     h('main', { class: 'menu' + (count ? ' has-bar' : '') }, O.menu.stalls.map((s) => h('section', { class: 'stall', id: `stall-${s.id}`, style: { '--c': s.color } },
@@ -106,8 +108,10 @@ function renderMenu() {
       s.items.map((it) => h('div', { class: 'row' + (qtyOf(it.id) ? ' picked' : '') },
         h('div', { class: 'row-info' }, h('div', { class: 'row-name' }, it.name), h('div', { class: 'row-price num' }, money(it.price_cents))),
         stepper(it)))))),
-    count ? h('button', { class: 'bar', onclick: () => { O.view = 'review'; render(); } },
-      h('span', {}, `View order · ${plural(count, 'item')}`), h('strong', { class: 'num' }, money(cartTotal()))) : null);
+    count ? h('button', { class: 'bar' + (bump ? ' bump' : ''), onclick: () => { O.view = 'review'; render(); } },
+      h('span', { class: 'bar-text' }, h('span', { class: 'bar-title' }, 'Complete order'),
+        h('span', { class: 'bar-sub' }, `${plural(count, 'item')} · `, h('strong', { class: 'num' }, money(cartTotal())))),
+      h('span', { class: 'bar-go', 'aria-hidden': 'true', innerHTML: '<svg viewBox="0 0 24 24"><path d="M5 12h13M12 5l7 7-7 7" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/></svg>' })) : null);
 }
 
 function renderReview() {
@@ -117,7 +121,6 @@ function renderReview() {
   put(app,
     header('Check your order'),
     h('main', { class: 'review' },
-      h('button', { class: 'back', onclick: () => { O.view = 'menu'; render(); } }, '‹ Add more food'),
       h('div', { class: 'lines' }, O.cart.map((l) => {
         const it = O.items.get(l.item_id);
         return h('div', { class: 'line' },
@@ -128,7 +131,9 @@ function renderReview() {
       })),
       h('div', { class: 'total' }, h('span', {}, `Total · ${plural(count, 'item')}`), h('strong', { class: 'num' }, money(total))),
       h('p', { class: 'note' }, `You will get a 4-digit code. Show it at any cashier and pay ${money(total)} by cash or card. Your food tickets print there.`),
-      h('button', { class: 'submit', disabled: O.busy, onclick: submit }, O.busy ? 'Sending…' : 'Submit order')));
+      h('div', { class: 'actions' },
+        h('button', { class: 'more', onclick: () => { O.view = 'menu'; render(); } }, 'Add more items'),
+        h('button', { class: 'submit', disabled: O.busy, onclick: submit }, O.busy ? 'Sending…' : 'Submit order'))));
 }
 
 function renderCode() {
@@ -136,8 +141,9 @@ function renderCode() {
   const paid = p.status === 'paid';
   const dead = p.status === 'expired' || p.status === 'cancelled';
   put(app,
-    header(paid ? 'Paid. Enjoy your food!' : 'Show this code at any cashier'),
+    header(paid ? 'Paid. Enjoy your food!' : dead ? '' : 'Pre-order received'),
     h('main', { class: 'code-view' },
+      !paid && !dead ? h('p', { class: 'code-cta' }, 'Show this code at any cashier to pay') : null,
       h('div', { class: 'code-card' + (paid ? ' paid' : dead ? ' dead' : '') },
         h('div', { class: 'code-label' }, paid ? 'Paid' : dead ? 'This code has expired' : 'Your order code'),
         h('div', { class: 'code num' }, p.code),
@@ -149,7 +155,7 @@ function renderCode() {
         h('div', { class: 'row-info' }, h('div', { class: 'row-name' }, `${l.qty}× ${l.name}`), h('div', { class: 'row-price' }, l.stall_name)),
         h('div', { class: 'line-total num' }, money(l.price_cents * l.qty))))),
       !paid && !dead ? h('p', { class: 'note' }, 'Keep this screen open or take a screenshot. Visit any cashier to get your tickets printed.') : null,
-      h('button', { class: paid || dead ? 'submit' : 'again', onclick: startOver }, 'Start a new order')));
+      h('button', { class: 'restart', onclick: startOver }, 'Start a new order')));
 }
 
 // ---------- actions ----------
